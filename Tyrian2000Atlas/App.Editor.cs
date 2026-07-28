@@ -202,14 +202,13 @@ public sealed unsafe partial class App
     }
 
     /// <summary>
-    /// The editor's header: two rows with a clean split of concerns. The top row is the
-    /// PROJECT — which episode, and the operations that touch disk. The bottom row is the
-    /// WORKSPACE — what is being edited and the playtest launch. One row carrying both was
-    /// where the band stopped being scannable.
+    /// The editor's header, one line: the project (episode + disk operations), the
+    /// workspace switch, the playtest launch, the status. The band's min-width machinery
+    /// keeps a too-narrow window honest by widening it.
     /// </summary>
     private void DrawEditorBand(EditableEpisode ep)
     {
-        BandBegin("edband", AcEdit, rows: 2);
+        BandBegin("edband", AcEdit);
 
         BandLabel("episode");
         ImGui.SetNextItemWidth(110);
@@ -245,6 +244,21 @@ public sealed unsafe partial class App
             _edConfirmBlank = true;
 
         BandDivider();
+        SegBar("##edmode", ref _edMode, AcEdit, 250f,
+            ("Levels", "The tyrian{N}.lvl side: maps, events and per-level settings."),
+            ("Script", "The levels{N}.dat side: level names, order, songs, shops and jumps."),
+            ("Enemies", ep.SharedEnemyTable
+                ? "The enemyDat table in tyrian.hdt - shared by episodes 1-3."
+                : $"The enemyDat table embedded in tyrian{ep.Number}.lvl."));
+
+        BandDivider();
+        bool canPlaytest = EditorLevel() != null;
+        if (UiButton("Playtest", AcGo, "Run the selected level in the playback simulation,\n" +
+                "edits and all - nothing needs to be saved first.\n" +
+                "Enemy-table edits ride along too.", 0f, !canPlaytest))
+            EditorPlaytest();
+
+        BandDivider();
         if (UiButton("Save", AcEdit,
                 $"Write {ep.LvlFileName} + {ep.ScriptFileName}" +
                 (ep.SharedEnemyTable ? " (+ tyrian.hdt if enemies changed)" : "") +
@@ -264,21 +278,6 @@ public sealed unsafe partial class App
         if (UiButton("Reload", AcEdit, "Throw the edits away and reload the episode from disk.",
                 0f, !ep.Dirty))
             EditorReload();
-
-        // ---- row 2: the workspace ----
-        SegBar("##edmode", ref _edMode, AcEdit, 300f,
-            ("Levels", "The tyrian{N}.lvl side: maps, events and per-level settings."),
-            ("Script", "The levels{N}.dat side: level names, order, songs, shops and jumps."),
-            ("Enemies", ep.SharedEnemyTable
-                ? "The enemyDat table in tyrian.hdt - shared by episodes 1-3."
-                : $"The enemyDat table embedded in tyrian{ep.Number}.lvl."));
-
-        BandDivider();
-        bool canPlaytest = EditorLevel() != null;
-        if (UiButton("Playtest", AcGo, "Run the selected level in the playback simulation,\n" +
-                "edits and all - nothing needs to be saved first.\n" +
-                "Enemy-table edits ride along too.", 0f, !canPlaytest))
-            EditorPlaytest();
 
         BandDivider();
         string note = _edStatus.Length > 0 ? _edStatus

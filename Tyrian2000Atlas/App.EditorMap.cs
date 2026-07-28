@@ -17,7 +17,12 @@ namespace T2A;
 public sealed unsafe partial class App
 {
     private int _emLayer;                 // 0 = BG1 (ground), 1 = BG2, 2 = BG3
-    private int _emTool;                  // 0 paint, 1 erase, 2 pick, 3 fill, 4 rect, 5 spawn
+    /// <summary>0 paint, 1 erase, 2 pick, 3 fill, 4 rect (terrain) · 5 place, 6 select (spawns).</summary>
+    private int _emTool;
+    private int _emLastTerrainTool;       // restored when switching back to Terrain
+    private int _emLastSpawnTool = 5;     // ... and to Spawns
+    /// <summary>Spawns are a mode of their own, not the last chip in the tool row.</summary>
+    private bool SpawnMode => _emTool >= 5;
     private float _emZoom = 1f;
     private bool _emGrid = true;
     private bool _emDimOthers = true;
@@ -65,7 +70,22 @@ public sealed unsafe partial class App
     private int _emSpawnBand;             // 0 auto, 1 sky, 2 ground, 3 top, 4 ground2
     private bool _emSpawnBottom;          // enter from the bottom edge instead of the top
     private bool _emBankOnly = true;      // palette lists only banks the level loads
+    private bool _emSnap;                 // snap spawn X to a 6px lane grid
     private readonly byte[] _emSpawnFilter = new byte[48];
+    private int _emSpawnPanel;            // 0 brush, 1 selection, 2 waves
+    private int _emSelLink = 1;           // the link number the bulk-assign field holds
+    private int _emSelStagger = 8;        // ticks per member for the stagger op
+
+    /// <summary>A wave saved off a selection: relative times, absolute Xs shifted as one.</summary>
+    private sealed class WaveStamp
+    {
+        public string Name = "";
+        public List<EventRec> Events = new();   // Time = offset from the wave's start
+        public float AnchorX;                   // canvas X of the earliest member at capture
+        public int Enemy;                       // for the thumbnail
+    }
+    private readonly List<WaveStamp> _emWaves = new();
+    private int _emWaveArmed = -1;              // wave the Place tool stamps (-1 = enemy brush)
     private int _emFormation;             // 0 single, 1 row, 2 column, 3 wedge
     private int _emFormCount = 4;
     private int _emFormSpacing = 28;
@@ -114,6 +134,7 @@ public sealed unsafe partial class App
     private void DrawMapEditor(EditableEpisode ep, EditableLevel lv)
     {
         DrawMapToolStrip(ep, lv);
+        DrawPacingStrip(ep, lv);
 
         float paletteW = _emPalette ? 252f : 0f;
         const float miniW = 58f;
@@ -126,34 +147,73 @@ public sealed unsafe partial class App
         {
             ImGui.SameLine(0, 6);
             WellBegin("empal", new Vector2(paletteW, avail.Y), AcEdit);
-            if (_emPaletteMode == 1) DrawSpawnPalette(ep, lv);
+            if (_emPaletteMode == 1) DrawSpawnPanelTabs(ep, lv);
             else if (_emSlots) DrawSlotEditor(ep, lv);
             else DrawTilePalette(ep, lv);
             WellEnd();
         }
     }
 
+    /// <summary>The spawn workspace's side panel: the brush, the selection, the wave shelf.</summary>
+    private void DrawSpawnPanelTabs(EditableEpisode ep, EditableLevel lv)
+    {
+        string selLabel = _emSelSet.Count > 0 ? $"Sel ({_emSelSet.Count})" : "Sel";
+        SegBar("##emsptabs", ref _emSpawnPanel, AcEdit, ImGui.GetContentRegionAvail().X - 4f,
+            ("Brush", "What a click places: enemy, band, entry edge, formation."),
+            (selLabel, "The selected spawns, and the shaping operations that act on all\nof them at once."),
+            ($"Waves ({_emWaves.Count})", "Selections saved as reusable waves - stamp them anywhere,\nin any level."));
+        ImGui.Dummy(new Vector2(0, 2));
+        switch (_emSpawnPanel)
+        {
+            case 1: DrawSelectionPanel(ep, lv); break;
+            case 2: DrawWavesPanel(ep, lv); break;
+            default: DrawSpawnPalette(ep, lv); break;
+        }
+    }
+
     private void DrawMapToolStrip(EditableEpisode ep, EditableLevel lv)
     {
         BandBegin("emband", AcEdit);
-        SegBar("##emlayer", ref _emLayer, AcEdit, 172f,
-            ("BG1", "Ground layer: 14x300 cells, the gameplay length of the level.  (key 1)"),
-            ("BG2", "Middle layer: 14x600 cells, scrolls faster, blended over BG1.  (key 2)"),
-            ("BG3", "Cloud layer: 15x600 cells, fastest scroll.  (key 3)"));
+
+        // What is being edited comes first: the terrain, or the spawns living on it.
+        int mode = SpawnMode ? 1 : 0;
+        if (SegBar("##emmode2", ref mode, AcEdit, 168f,
+                ("Terrain", "Paint the three background layers with tiles and stamps."),
+                ("Spawns", "Place, select and shape the enemies directly on the map.")))
+        {
+            if (mode == 1) { _emLastTerrainTool = Math.Clamp(_emTool, 0, 4); _emTool = _emLastSpawnTool; }
+            else { _emLastSpawnTool = Math.Clamp(_emTool, 5, 6); _emTool = _emLastTerrainTool; }
+        }
 
         BandDivider();
-        int toolBefore = _emTool;
-        SegBar("##emtool", ref _emTool, AcEdit, 344f,
-            ("Paint", "Left-drag paints the brush.  (B)\nRight-click picks a tile; right-DRAG grabs a multi-tile stamp."),
-            ("Erase", "Left-drag clears cells to empty.  (E)"),
-            ("Pick", "Left-click reads a tile into the brush; drag grabs a stamp.  (I)"),
-            ("Fill", "Flood-fills the connected region of identical cells.  (G)"),
-            ("Rect", "Left-drag fills a rectangle, tiling the current stamp.  (M)"),
-            ("Spawn", "Place and move enemies directly on the map.  (S)\n" +
-                      "Click = place the spawn brush · drag a marker = move it\n" +
-                      "Delete = remove · double-click = open in the event tab"));
-        if (_emTool == 5 && toolBefore != 5) { _emPalette = true; _emPaletteMode = 1; }
-        if (_emTool != 5 && toolBefore == 5) _emPaletteMode = 0;
+        if (!SpawnMode)
+        {
+            SegBar("##emlayer", ref _emLayer, AcEdit, 150f,
+                ("BG1", "Ground layer: 14x300 cells, the gameplay length of the level.  (key 1)"),
+                ("BG2", "Middle layer: 14x600 cells, scrolls faster, blended over BG1.  (key 2)"),
+                ("BG3", "Cloud layer: 15x600 cells, fastest scroll.  (key 3)"));
+            BandDivider();
+            SegBar("##emtool", ref _emTool, AcEdit, 280f,
+                ("Paint", "Left-drag paints the brush.  (B)\nRight-click picks a tile; right-DRAG grabs a multi-tile stamp."),
+                ("Erase", "Left-drag clears cells to empty.  (E)"),
+                ("Pick", "Left-click reads a tile into the brush; drag grabs a stamp.  (I)"),
+                ("Fill", "Flood-fills the connected region of identical cells.  (G)"),
+                ("Rect", "Left-drag fills a rectangle, tiling the current stamp.  (M)"));
+        }
+        else
+        {
+            int stool = _emTool - 5;
+            SegBar("##emstool", ref stool, AcEdit, 150f,
+                ("Place", "Click drops the brush (or the armed wave).  (S)\n" +
+                          "Markers still select and drag; right-click adds a level event."),
+                ("Select", "Click and box-select without ever placing.  (V)\n" +
+                           "Drag moves the selection · Delete removes · Ctrl+D duplicates\n" +
+                           "Alt+drag duplicates-and-drags · arrows nudge"));
+            _emTool = 5 + Math.Clamp(stool, 0, 1);
+            _emLastSpawnTool = _emTool;
+        }
+        if (SpawnMode && _emPaletteMode != 1) { _emPalette = true; _emPaletteMode = 1; }
+        if (!SpawnMode) _emPaletteMode = 0;
 
         BandDivider();
         BandLabel("zoom");
@@ -204,14 +264,94 @@ public sealed unsafe partial class App
         }
 
         BandDivider();
-        string brush = _emTool == 5
-            ? $"spawn: enemy {_emSpawnEnemy}" + (_emFormation > 0 ? $" x{_emFormCount}" : "")
-            : _emStampW * _emStampH > 1 ? $"stamp {_emStampW}x{_emStampH}"
-            : $"tile {_emStamp[0]}";
-        if (_emScatter && _emTool is 0 or 4) brush += $" · scatter {_emScatterPct}%";
-        BandNote($"{brush}   ·   slots {lv.SlotsUsed(_emLayer)}/{EditableLevel.SlotLimit(_emLayer)}",
-            UiFaint);
+        string brush;
+        if (SpawnMode)
+        {
+            brush = _emTool == 6
+                ? (_emSelSet.Count > 0 ? $"{_emSelSet.Count} selected" : "select")
+                : _emWaveArmed >= 0 && _emWaveArmed < _emWaves.Count
+                    ? $"wave: {_emWaves[_emWaveArmed].Name}"
+                    : $"enemy {_emSpawnEnemy}" + (_emFormation > 0 ? $" x{_emFormCount}" : "");
+            BandNote(brush, UiFaint);
+        }
+        else
+        {
+            brush = _emStampW * _emStampH > 1 ? $"stamp {_emStampW}x{_emStampH}" : $"tile {_emStamp[0]}";
+            if (_emScatter && _emTool is 0 or 4) brush += $" · scatter {_emScatterPct}%";
+            BandNote($"{brush}   ·   slots {lv.SlotsUsed(_emLayer)}/{EditableLevel.SlotLimit(_emLayer)}",
+                UiFaint);
+        }
         BandEnd();
+    }
+
+    // =====================================================================
+    // Pacing strip: spawns over TIME, the level's rhythm at a glance
+    // =====================================================================
+
+    /// <summary>
+    /// A horizontal histogram of spawns per moment across the whole level, with the current
+    /// view marked — the pacing view a scrolling shooter lives or dies by. Click to jump.
+    /// </summary>
+    private void DrawPacingStrip(EditableEpisode ep, EditableLevel lv)
+    {
+        const float h = 30f;
+        float w = ImGui.GetContentRegionAvail().X;
+        var p = ImGui.GetCursorScreenPos();
+        var dl = ImGui.GetWindowDrawList();
+        bool clicked = ImGui.InvisibleButton("##empace", new Vector2(Math.Max(60, w), h));
+        bool hot = ImGui.IsItemHovered();
+
+        FlatRect(dl, p, p + new Vector2(w, h), Gfx.Rgba(14, 16, 21), Mix(UiPanelHi, AcEdit, 0.1f), 5f);
+        int endTime = 100;
+        foreach (var e in lv.Events) endTime = Math.Max(endTime, e.Time);
+
+        const int bins = 140;
+        Span<short> count = stackalloc short[bins];
+        foreach (var e in lv.Events)
+        {
+            if (!EventCatalog.IsSpawnType(e.Type)) continue;
+            int b = Math.Clamp(e.Time * bins / (endTime + 1), 0, bins - 1);
+            if (count[b] < short.MaxValue) count[b]++;
+        }
+        int peak = 1;
+        foreach (short c in count) peak = Math.Max(peak, c);
+
+        float bw = (w - 8f) / bins;
+        for (int b = 0; b < bins; b++)
+        {
+            if (count[b] == 0) continue;
+            float bh = MathF.Max(2f, (h - 8f) * count[b] / peak);
+            float x = p.X + 4f + b * bw;
+            dl.AddRectFilled(new Vector2(x, p.Y + h - 4f - bh), new Vector2(x + MathF.Max(1f, bw - 1f), p.Y + h - 4f),
+                Shade(AcEdit, 0.45f + 0.55f * count[b] / peak, 220));
+        }
+
+        // Flow moments as ticks along the top edge; the end in red.
+        foreach (var e in lv.Events)
+        {
+            if (EventCatalog.FlowLabel(e) == null) continue;
+            float x = Px(p.X + 4f + (w - 8f) * e.Time / (endTime + 1));
+            dl.AddLine(new Vector2(x, p.Y + 2f), new Vector2(x, p.Y + (e.Type == 11 ? h - 2f : 8f)),
+                Shade(e.Type == 11 ? AcEnemy : AcRoutes, 1f, e.Type == 11 ? (byte)220 : (byte)150));
+        }
+
+        // The slice of time the canvas is looking at.
+        int tBot = TimeForScroll(lv, ObjectPlacer.YBase - (_emViewTopCv + _emViewHCv));
+        int tTop = TimeForScroll(lv, ObjectPlacer.YBase - _emViewTopCv);
+        float vx0 = p.X + 4f + (w - 8f) * Math.Clamp(tBot, 0, endTime) / (endTime + 1);
+        float vx1 = p.X + 4f + (w - 8f) * Math.Clamp(tTop, 0, endTime) / (endTime + 1);
+        dl.AddRect(new Vector2(Px(vx0), Px(p.Y + 1f)), new Vector2(Px(Math.Max(vx1, vx0 + 5f)), Px(p.Y + h - 1f)),
+            Shade(AcPlayer, 0.95f, 210));
+
+        if (hot)
+        {
+            float frac = Math.Clamp((ImGui.GetMousePos().X - p.X - 4f) / (w - 8f), 0f, 1f);
+            int t = (int)(frac * endTime);
+            ImGui.SetTooltip($"t {t} - click to jump");
+            if (clicked)
+                _emScrollToY = (float)(ObjectPlacer.YBase - TimeToScroll(lv, t));
+        }
+        ImGui.Dummy(new Vector2(0, 2));
     }
 
     // =====================================================================
@@ -312,7 +452,7 @@ public sealed unsafe partial class App
         if (_emGuide) DrawScreenGuide(dl, lv, origin, z, viewTop, viewH);
         DrawTimeRuler(dl, lv, origin, z, viewTop, viewH);
         DrawFlowLines(lv, dl, origin, z);
-        if (_emMarkers || _emTool == 5) DrawSpawnMarkers(ep, lv, dl, origin, z);
+        if (_emMarkers || SpawnMode) DrawSpawnMarkers(ep, lv, dl, origin, z);
 
         HandleMapMouse(ep, lv, origin, z, size);
         DrawAddEventMenu(ep, lv);
@@ -321,7 +461,9 @@ public sealed unsafe partial class App
         UiHint(ImGui.GetForegroundDrawList(),
             new Vector2(winPos.X + 8, winPos.Y + size.Y - 26),
             _emTool == 5
-                ? "click place · drag move · drag empty = select box · ctrl+D duplicate · Delete · P play here"
+                ? "click place · drag move · drag empty = select box · alt+drag copy · right-click add event · P play here"
+                : _emTool == 6
+                ? "click / box select · drag move · ctrl+D duplicate · Delete · arrows nudge · P play here"
                 : "space+drag pan · shift+wheel sideways · ctrl+wheel zoom · right-drag stamp · P play here · ctrl+Z undo",
             AcEdit);
 
@@ -341,7 +483,7 @@ public sealed unsafe partial class App
         var win = ImGui.GetWindowPos();
         float winBot = win.Y + ImGui.GetWindowSize().Y;
         var mouse = ImGui.GetMousePos();
-        bool interactive = _emTool == 5 && ImGui.IsWindowHovered();
+        bool interactive = SpawnMode && ImGui.IsWindowHovered();
         float x0 = origin.X, x1 = origin.X + LevelRenderer.CanvasW * z;
         float lastLabelY = float.MinValue, labelX = 0f;
 
@@ -611,7 +753,7 @@ public sealed unsafe partial class App
         if (!io.WantTextInput)
         {
             // With spawns selected the arrows NUDGE them; otherwise they pan the view.
-            if (_emTool == 5 && _emSelSet.Count > 0)
+            if (SpawnMode && _emSelSet.Count > 0)
             {
                 if (ImGui.IsKeyPressed(ImGuiKey.LeftArrow, true)) NudgeSelection(ep, lv, -1, 0, io.KeyShift);
                 if (ImGui.IsKeyPressed(ImGuiKey.RightArrow, true)) NudgeSelection(ep, lv, 1, 0, io.KeyShift);
@@ -660,7 +802,7 @@ public sealed unsafe partial class App
         bool inGrid = cellC >= 0 && cellC < cols && cellR >= 0 && cellR < rows;
         var dl = ImGui.GetWindowDrawList();
 
-        if (_emTool == 5)
+        if (SpawnMode)
         {
             HandleSpawnTool(ep, lv, origin, z, mouse, dl);
             return;
@@ -770,7 +912,7 @@ public sealed unsafe partial class App
     {
         if (io.WantTextInput) return;
         if (io.KeyCtrl && ImGui.IsKeyPressed(ImGuiKey.Z)) UndoMap(ep);
-        if (io.KeyCtrl && ImGui.IsKeyPressed(ImGuiKey.D) && _emTool == 5)
+        if (io.KeyCtrl && ImGui.IsKeyPressed(ImGuiKey.D) && SpawnMode)
             DuplicateSelection(ep, lv);
         if (io.KeyCtrl) return;
         if (ImGui.IsKeyPressed(ImGuiKey.B)) _emTool = 0;
@@ -779,10 +921,11 @@ public sealed unsafe partial class App
         if (ImGui.IsKeyPressed(ImGuiKey.G)) _emTool = 3;
         if (ImGui.IsKeyPressed(ImGuiKey.M)) _emTool = 4;
         if (ImGui.IsKeyPressed(ImGuiKey.S)) { _emTool = 5; _emPalette = true; _emPaletteMode = 1; }
+        if (ImGui.IsKeyPressed(ImGuiKey.V)) { _emTool = 6; _emPalette = true; _emPaletteMode = 1; }
         if (ImGui.IsKeyPressed(ImGuiKey.Key1)) _emLayer = 0;
         if (ImGui.IsKeyPressed(ImGuiKey.Key2)) _emLayer = 1;
         if (ImGui.IsKeyPressed(ImGuiKey.Key3)) _emLayer = 2;
-        if (ImGui.IsKeyPressed(ImGuiKey.Delete) && _emTool == 5 && _emSelSet.Count > 0)
+        if (ImGui.IsKeyPressed(ImGuiKey.Delete) && SpawnMode && _emSelSet.Count > 0)
             DeleteSpawn(ep, lv);
     }
 
@@ -980,7 +1123,7 @@ public sealed unsafe partial class App
     {
         EnsureEditorObjects(ep, lv);
         if (_emObjects == null) return;
-        bool spawnTool = _emTool == 5;
+        bool spawnTool = SpawnMode;
         var mouse = ImGui.GetMousePos();
         var winTop = ImGui.GetWindowPos().Y;
         float winBot = winTop + ImGui.GetWindowSize().Y;
@@ -1085,9 +1228,11 @@ public sealed unsafe partial class App
         _edSelectTab = 0;
         SelectOnly(idx);
         _evSelected = idx;
-        _emTool = 5;
+        _emTool = 6;   // arrive holding the thing, not a loaded brush
+        _emLastSpawnTool = 6;
         _emPalette = true;
         _emPaletteMode = 1;
+        _emSpawnPanel = 1;
         float y = (float)(ObjectPlacer.YBase - TimeToScroll(lv, lv.Events[idx].Time));
         EnsureEditorObjects(ep, lv);
         if (_emObjects != null)
@@ -1119,7 +1264,9 @@ public sealed unsafe partial class App
             return;
         }
 
-        // ---- a pending press on empty space: drag = marquee, release in place = spawn ----
+        // ---- a pending press on empty space ----
+        // Place tool: drag = marquee, release in place = drop the brush/wave.
+        // Select tool: drag = marquee, release in place = clear the selection.
         if (_emPressEmpty)
         {
             if (Vector2.Distance(mouse, _emPressPos) * z > 6f) _emMarqueeLive = true;
@@ -1144,12 +1291,20 @@ public sealed unsafe partial class App
                                 _emSelSet.Add(o.EventIndex);
                     _emSelEvent = _emSelSet.Count > 0 ? _emSelSet.Max() : -1;
                     if (_emSelSet.Count > 0)
+                    {
+                        _emSpawnPanel = 1;   // the Selection tab is now the working surface
                         _edStatus = $"{_emSelSet.Count} spawns selected - drag to move, " +
                                     "Delete removes, Ctrl+D duplicates, arrows nudge";
+                    }
+                }
+                else if (_emTool == 5)
+                {
+                    if (_emWaveArmed >= 0) PlaceWaveAt(ep, lv, _emPressPos);
+                    else PlaceSpawnAt(ep, lv, _emPressPos);
                 }
                 else
                 {
-                    PlaceSpawnAt(ep, lv, _emPressPos);
+                    SelectOnly(-1);   // Select tool: a click on nothing empties the hand
                 }
                 _emPressEmpty = false;
                 _emMarqueeLive = false;
@@ -1194,6 +1349,12 @@ public sealed unsafe partial class App
                 }
                 if (!_emSelSet.Contains(grabbed)) SelectOnly(grabbed);
                 _emSelEvent = grabbed;
+                if (io.KeyAlt)
+                {
+                    // Alt+drag: leave the originals, take the copies with you.
+                    DuplicateSelection(ep, lv, dtOffset: 0);
+                    grabbed = _emSelEvent;
+                }
                 BeginMarkerDrag(lv, grabbed, mouse);
             }
             else
@@ -1206,7 +1367,32 @@ public sealed unsafe partial class App
             return;
         }
 
-        // ---- idle: ghost the spawn brush (and its formation, and its flight) ----
+        // ---- idle: ghost what a click would do ----
+        if (_emTool == 6) return;   // the Select tool places nothing and ghosts nothing
+        if (!overMarker && _emWaveArmed >= 0 && _emWaveArmed < _emWaves.Count)
+        {
+            // The armed wave, member by member, hanging off the cursor.
+            var wave = _emWaves[_emWaveArmed];
+            var table2 = ep.Enemies;
+            int bm = BackMoveAt(lv, Math.Max(1, CanvasYToTime(lv, mouse.Y)));
+            foreach (var rel in wave.Events)
+            {
+                float gx = ImGui.GetMousePos().X + (rel.Dat2 is (-99) or (-200)
+                    ? 0 : (rel.Dat2 - wave.Events[0].Dat2)) * z;
+                float gy = ImGui.GetMousePos().Y - rel.Time * Math.Max(1, bm) * z;
+                int id = rel.Type is >= 49 and <= 52 ? 0 : rel.Dat;
+                if (id >= 0 && id < table2.Length)
+                    EditorEnemyThumbTinted(dl, table2, id,
+                        new Vector2(gx - 14, gy - 16), new Vector2(gx + 14, gy + 16), 150);
+            }
+            var pc = ImGui.GetMousePos();
+            dl.AddLine(pc - new Vector2(10, 0), pc + new Vector2(10, 0), Shade(AcEdit, 1f, 200));
+            dl.AddLine(pc - new Vector2(0, 10), pc + new Vector2(0, 10), Shade(AcEdit, 1f, 200));
+            int wt = SpawnTimeForY(lv, mouse.Y, -28);
+            ImGui.SetTooltip($"stamp {wave.Name} ({wave.Events.Count} spawns)  ·  t {(wt < 0 ? "?" : wt)}\n" +
+                             "right-click the Waves tab entry to disarm");
+            return;
+        }
         if (!overMarker)
         {
             var table = ep.Enemies;
@@ -1411,6 +1597,7 @@ public sealed unsafe partial class App
             _edStatus = "that spot is above what the level ever scrolls in";
             return;
         }
+        float baseX = _emSnap ? MathF.Round(canvasMouse.X / 6f) * 6f : canvasMouse.X;
         PushEventsUndo(lv);
         int lastAt = -1;
         foreach (var (dx, dt) in offsets)
@@ -1420,7 +1607,7 @@ public sealed unsafe partial class App
                 Time = (ushort)Math.Clamp(t0 + dt, 1, 65499),
                 Type = SpawnEventType(band),
                 Dat = (short)_emSpawnEnemy,
-                Dat2 = SpawnXForCanvas(lv, canvasMouse.X + dx, band),
+                Dat2 = SpawnXForCanvas(lv, baseX + dx, band),
             };
             int at = 0;
             while (at < lv.Events.Count && lv.Events[at].Time <= ev.Time) at++;
@@ -1456,6 +1643,7 @@ public sealed unsafe partial class App
     {
         if (_emDragOrigs == null) { _emDragEvent = -1; return; }
         var delta = canvasMouse - _emDragStartMouse;
+        if (_emSnap) delta.X = MathF.Round(delta.X / 6f) * 6f;
         MoveSpawns(ep, lv, _emDragOrigs, delta);
     }
 
@@ -1516,8 +1704,9 @@ public sealed unsafe partial class App
         SortEvents(lv);
     }
 
-    /// <summary>Ctrl+D: duplicate the selection a touch later, and select the copies.</summary>
-    private void DuplicateSelection(EditableEpisode ep, EditableLevel lv)
+    /// <summary>Ctrl+D (a touch later) or Alt+drag (in place): duplicate the selection and
+    /// select the copies.</summary>
+    private void DuplicateSelection(EditableEpisode ep, EditableLevel lv, int dtOffset = 12)
     {
         if (_emSelSet.Count == 0) return;
         if (lv.Events.Count + _emSelSet.Count > EditableLevel.MaxEvents)
@@ -1531,7 +1720,7 @@ public sealed unsafe partial class App
             if (idx >= 0 && idx < lv.Events.Count)
             {
                 var ev = lv.Events[idx];
-                ev.Time = (ushort)Math.Min(65499, ev.Time + 12);
+                ev.Time = (ushort)Math.Min(65499, ev.Time + dtOffset);
                 copies.Add(ev);
             }
         _emSelSet.Clear();
@@ -1547,7 +1736,48 @@ public sealed unsafe partial class App
         }
         _emSelEvent = _emSelSet.Count > 0 ? _emSelSet.Max() : -1;
         NoteEventsChanged(ep);
-        _edStatus = $"duplicated {copies.Count} spawns (+12 ticks) - drag them into place";
+        _edStatus = dtOffset > 0
+            ? $"duplicated {copies.Count} spawns (+{dtOffset} ticks) - drag them into place"
+            : $"duplicated {copies.Count} spawns - dragging the copies";
+    }
+
+    /// <summary>Stamp an armed wave at the cursor: relative times, the whole X pattern
+    /// shifted as one to land the wave's anchor under the hand.</summary>
+    private void PlaceWaveAt(EditableEpisode ep, EditableLevel lv, Vector2 canvasMouse)
+    {
+        if (_emWaveArmed < 0 || _emWaveArmed >= _emWaves.Count) return;
+        var wave = _emWaves[_emWaveArmed];
+        if (lv.Events.Count + wave.Events.Count > EditableLevel.MaxEvents)
+        {
+            _edStatus = $"event list is full ({EditableLevel.MaxEvents})";
+            return;
+        }
+        int t0 = SpawnTimeForY(lv, canvasMouse.Y, -28);
+        if (t0 < 0)
+        {
+            _edStatus = "that spot is above what the level ever scrolls in";
+            return;
+        }
+        float snapX = _emSnap ? MathF.Round(canvasMouse.X / 6f) * 6f : canvasMouse.X;
+        int dx = (int)MathF.Round(snapX - wave.AnchorX);
+        PushEventsUndo(lv);
+        _emSelSet.Clear();
+        foreach (var rel in wave.Events)
+        {
+            var ev = rel;
+            ev.Time = (ushort)Math.Clamp(t0 + rel.Time, 1, 65499);
+            if (ev.Dat2 is not (-99) and not (-200))
+                ev.Dat2 = (short)Math.Clamp(ev.Dat2 + dx, short.MinValue, short.MaxValue);
+            int at = 0;
+            while (at < lv.Events.Count && lv.Events[at].Time <= ev.Time) at++;
+            lv.Events.Insert(at, ev);
+            var shifted = _emSelSet.Where(i => i >= at).OrderByDescending(i => i).ToList();
+            foreach (int s in shifted) { _emSelSet.Remove(s); _emSelSet.Add(s + 1); }
+            _emSelSet.Add(at);
+        }
+        _emSelEvent = _emSelSet.Count > 0 ? _emSelSet.Max() : -1;
+        NoteEventsChanged(ep);
+        _edStatus = $"stamped {wave.Name} ({wave.Events.Count} spawns) at t {t0}";
     }
 
     private void DeleteSpawn(EditableEpisode ep, EditableLevel lv)
@@ -1790,6 +2020,9 @@ public sealed unsafe partial class App
         UiToggle("enter from bottom", ref _emSpawnBottom, AcEdit,
             "Spawn at the bottom edge (y 190) instead of the top (-28) -\n" +
             "the engine's chaser/escort entry.");
+        ImGui.SameLine(0, 5);
+        UiToggle("snap", ref _emSnap, AcEdit,
+            "Snap placed and stamped Xs to a 6px lane grid - tidy columns\nwithout pixel-nudging.");
 
         UiSection("Formation", AcEdit);
         SegBar("##emform", ref _emFormation, AcEdit, ImGui.GetContentRegionAvail().X - 4f,
@@ -1835,6 +2068,7 @@ public sealed unsafe partial class App
                     {
                         _emSpawnEnemy = id;
                         _emTool = 5;
+                        _emWaveArmed = -1;
                     }
                 }
             }
@@ -1862,6 +2096,7 @@ public sealed unsafe partial class App
             {
                 _emSpawnEnemy = id;
                 _emTool = 5;
+                _emWaveArmed = -1;   // picking an enemy loads the plain brush again
                 NoteRecentEnemy(id);
             }
         }
@@ -1870,6 +2105,278 @@ public sealed unsafe partial class App
                 ? "this level loads few banks - untick 'banks' to see everything"
                 : "clear the filter", AcEdit);
         ImGui.EndChild();
+    }
+
+    // =====================================================================
+    // Selection panel: shaping operations over the whole selection
+    // =====================================================================
+
+    private void DrawSelectionPanel(EditableEpisode ep, EditableLevel lv)
+    {
+        if (_emSelSet.Count == 0)
+        {
+            UiEmpty("nothing selected",
+                "box-select spawns on the map\n(drag on empty space)", AcEdit);
+            return;
+        }
+
+        var idxs = _emSelSet.Where(i => i >= 0 && i < lv.Events.Count).OrderBy(i => i).ToList();
+        var times = idxs.Select(i => (int)lv.Events[i].Time).OrderBy(t => t).ToList();
+        UiSection("Selection", AcEdit, $"{idxs.Count} spawns");
+        if (times.Count > 0)
+            ImGui.TextDisabled($"t {times[0]} .. {times[^1]}  ({times[^1] - times[0]} ticks)");
+        ImGui.Dummy(new Vector2(0, 2));
+
+        float w2 = (ImGui.GetContentRegionAvail().X - 5f) / 2f;
+
+        // ---- shape in time ----
+        UiSection("Time", AcEdit);
+        ImGui.SetNextItemWidth(70);
+        ImGui.InputInt("##selstag", ref _emSelStagger);
+        _emSelStagger = Math.Clamp(_emSelStagger, 0, 600);
+        ImGui.SameLine(0, 4);
+        if (UiButton("stagger", AcEdit,
+                "First member keeps its time; each next one fires this many\nticks later - turns a clump into a stream.", 0f))
+            BulkRetime(ep, lv, idxs, (order, count, t0, t1, torig) => t0 + order * _emSelStagger);
+        ImGui.SameLine(0, 4);
+        if (UiButton("spread", AcEdit,
+                "Keep the first and last times, space everyone evenly between.", 0f,
+                idxs.Count < 3))
+            BulkRetime(ep, lv, idxs, (order, count, t0, t1, torig) =>
+                t0 + (int)Math.Round((t1 - t0) * (double)order / (count - 1)));
+        if (UiButton("reverse order", AcEdit,
+                "Mirror the times inside the span: the last attacker becomes the first.", w2))
+            BulkRetime(ep, lv, idxs, (order, count, t0, t1, torig) => t0 + t1 - torig);
+        ImGui.SameLine(0, 5);
+        if (UiButton("same time", AcEdit, "Everyone fires at the first member's time.", w2))
+            BulkRetime(ep, lv, idxs, (order, count, t0, t1, torig) => t0);
+
+        // ---- shape in space ----
+        UiSection("Position", AcEdit);
+        if (UiButton("mirror X", AcEdit,
+                "Flip the whole pattern around the playfield's centre -\nthe left-hand wave becomes its right-hand twin.", w2))
+            BulkMirrorX(ep, lv, idxs);
+        ImGui.SameLine(0, 5);
+        if (UiButton("align X", AcEdit, "Every member takes the first one's X.", w2))
+            BulkAlignX(ep, lv, idxs);
+
+        // ---- identity ----
+        UiSection("Identity", AcEdit);
+        if (UiButton($"set enemy -> {_emSpawnEnemy}", AcEdit,
+                "Every plain spawn in the selection becomes the brush enemy.", -1f))
+            BulkSetEnemy(ep, lv, idxs, _emSpawnEnemy);
+        ImGui.SetNextItemWidth(70);
+        ImGui.InputInt("##sellink", ref _emSelLink);
+        _emSelLink = Math.Clamp(_emSelLink, 0, 255);
+        ImGui.SameLine(0, 4);
+        if (UiButton("set link", AcEdit,
+                "Stamp this link number on the whole selection - the handle\nevents 19/25/33/70... command groups by.", 0f))
+            BulkSetLink(ep, lv, idxs, _emSelLink);
+        ImGui.SameLine(0, 4);
+        if (UiButton("free", AcEdit, "Find a link number nothing in this level uses yet.", 0f))
+        {
+            var used = new HashSet<int>();
+            foreach (var e in lv.Events) if (e.Dat4 != 0) used.Add(e.Dat4);
+            for (int l = 1; l < 200; l++)
+                if (!used.Contains(l)) { _emSelLink = l; break; }
+        }
+
+        UiSection("Wave shelf", AcEdit);
+        if (UiButton("save as wave", AcEdit,
+                "Keep this pattern - relative times, the X layout - on the Waves\n" +
+                "shelf, ready to stamp anywhere in any level.", -1f))
+            SaveSelectionAsWave(ep, lv, idxs);
+
+        // ---- the members, jump-to on click ----
+        UiSection("Members", AcEdit);
+        ImGui.BeginChild("emselrows");
+        var dl = ImGui.GetWindowDrawList();
+        foreach (int i in idxs.OrderBy(i => lv.Events[i].Time))
+        {
+            if (!RowVisible(30f)) continue;
+            var ev = lv.Events[i];
+            var box = UiRow($"##selm{i}", i == _emSelEvent, AcEdit, 30f);
+            int id = ev.Type is >= 49 and <= 52 ? 0 : ev.Dat;
+            EditorEnemyThumb(dl, ep.Enemies, id, box.Min + new Vector2(4, 1),
+                new Vector2(box.Min.X + 32, box.Max.Y - 1));
+            RowText(box, 40f, $"t {ev.Time}",
+                $"{(EventCatalog.IsSpawnType(ev.Type) ? $"enemy {ev.Dat}" : EventCatalog.Get(ev.Type).Name)}" +
+                (ev.Dat4 != 0 ? $" · link {ev.Dat4}" : ""), AcEdit, box.Selected);
+            if (box.Clicked)
+            {
+                _emSelEvent = i;
+                _emScrollToY = (float)(ObjectPlacer.YBase - TimeToScroll(lv, ev.Time));
+            }
+        }
+        ImGui.EndChild();
+    }
+
+    /// <summary>Rewrite the selection's times through a shape function of (time-order,
+    /// count, first, last, member's original time), then re-sort with selections following.
+    /// Original times are snapshotted first, so shapes read stable inputs.</summary>
+    private void BulkRetime(EditableEpisode ep, EditableLevel lv, List<int> idxs,
+        Func<int, int, int, int, int, int> shape)
+    {
+        if (idxs.Count == 0) return;
+        PushEventsUndo(lv);
+        var byTime = idxs.OrderBy(i => lv.Events[i].Time).ToList();
+        var orig = byTime.Select(i => (int)lv.Events[i].Time).ToArray();
+        int t0 = orig[0], t1 = orig[^1];
+        for (int order = 0; order < byTime.Count; order++)
+        {
+            var ev = lv.Events[byTime[order]];
+            ev.Time = (ushort)Math.Clamp(shape(order, byTime.Count, t0, t1, orig[order]), 1, 65499);
+            lv.Events[byTime[order]] = ev;
+        }
+        NoteEventsChanged(ep);
+        SortEvents(lv);
+    }
+
+    private void BulkMirrorX(EditableEpisode ep, EditableLevel lv, List<int> idxs)
+    {
+        EnsureEditorObjects(ep, lv);
+        if (_emObjects == null) return;
+        float centre = 48f + (_engaged ? GameSim.EngagedViewW : GameSim.ViewW) * 0.5f;
+        var xOf = new Dictionary<int, float>();
+        foreach (var o in _emObjects)
+            if (o.EventIndex >= 0 && !xOf.ContainsKey(o.EventIndex)) xOf[o.EventIndex] = o.X;
+        PushEventsUndo(lv);
+        foreach (int i in idxs)
+        {
+            var ev = lv.Events[i];
+            if (!EventCatalog.IsSpawnType(ev.Type) || ev.Dat2 is (-99) or (-200) ||
+                !xOf.TryGetValue(i, out float x)) continue;
+            ev.Dat2 = (short)Math.Clamp(ev.Dat2 + (int)MathF.Round((2f * centre - x) - x),
+                short.MinValue, short.MaxValue);
+            lv.Events[i] = ev;
+        }
+        NoteEventsChanged(ep);
+    }
+
+    private void BulkAlignX(EditableEpisode ep, EditableLevel lv, List<int> idxs)
+    {
+        var byTime = idxs.OrderBy(i => lv.Events[i].Time).ToList();
+        if (byTime.Count == 0) return;
+        short x = lv.Events[byTime[0]].Dat2;
+        if (x is (-99) or (-200)) return;
+        PushEventsUndo(lv);
+        foreach (int i in byTime)
+        {
+            var ev = lv.Events[i];
+            if (!EventCatalog.IsSpawnType(ev.Type)) continue;
+            ev.Dat2 = x;
+            lv.Events[i] = ev;
+        }
+        NoteEventsChanged(ep);
+    }
+
+    private void BulkSetEnemy(EditableEpisode ep, EditableLevel lv, List<int> idxs, int enemy)
+    {
+        PushEventsUndo(lv);
+        foreach (int i in idxs)
+        {
+            var ev = lv.Events[i];
+            // Only plain spawns: a 49-52's dat is a sprite, a 12's block base is a choice.
+            if (ev.Type is 6 or 7 or 10 or 15 or 17 or 18 or 23 or 32 or 56)
+            {
+                ev.Dat = (short)enemy;
+                lv.Events[i] = ev;
+            }
+        }
+        NoteEventsChanged(ep);
+    }
+
+    private void BulkSetLink(EditableEpisode ep, EditableLevel lv, List<int> idxs, int link)
+    {
+        PushEventsUndo(lv);
+        foreach (int i in idxs)
+        {
+            var ev = lv.Events[i];
+            if (!EventCatalog.IsSpawnType(ev.Type)) continue;
+            ev.Dat4 = (byte)Math.Clamp(link, 0, 255);
+            lv.Events[i] = ev;
+        }
+        NoteEventsChanged(ep);
+        _edStatus = $"link {link} stamped on {idxs.Count} spawns";
+    }
+
+    private void SaveSelectionAsWave(EditableEpisode ep, EditableLevel lv, List<int> idxs)
+    {
+        var byTime = idxs.Where(i => EventCatalog.IsSpawnType(lv.Events[i].Type))
+            .OrderBy(i => lv.Events[i].Time).ToList();
+        if (byTime.Count == 0) return;
+        EnsureEditorObjects(ep, lv);
+        int t0 = lv.Events[byTime[0]].Time;
+        var wave = new WaveStamp
+        {
+            Name = $"Wave {_emWaves.Count + 1}",
+            Enemy = lv.Events[byTime[0]].Type is >= 49 and <= 52 ? 0 : lv.Events[byTime[0]].Dat,
+            AnchorX = 180f,
+        };
+        if (_emObjects != null)
+            foreach (var o in _emObjects)
+                if (o.EventIndex == byTime[0]) { wave.AnchorX = o.X; break; }
+        foreach (int i in byTime)
+        {
+            var ev = lv.Events[i];
+            ev.Time = (ushort)(ev.Time - t0);
+            wave.Events.Add(ev);
+        }
+        _emWaves.Add(wave);
+        if (_emWaves.Count > 12) _emWaves.RemoveAt(0);
+        _emSpawnPanel = 2;
+        _edStatus = $"{wave.Name} shelved ({wave.Events.Count} spawns) - arm it and stamp away";
+    }
+
+    // =====================================================================
+    // Waves panel: the reusable shelf
+    // =====================================================================
+
+    private void DrawWavesPanel(EditableEpisode ep, EditableLevel lv)
+    {
+        UiSection("Waves", AcEdit, "session shelf");
+        ImGui.TextDisabled("Selections saved as stamps: relative\ntimes, the X pattern moved as one.\nThey work across levels.");
+        ImGui.Dummy(new Vector2(0, 3));
+        if (_emWaves.Count == 0)
+        {
+            UiEmpty("shelf is empty",
+                "select spawns on the map, then\n'save as wave' in the Sel tab", AcEdit);
+            return;
+        }
+
+        var dl = ImGui.GetWindowDrawList();
+        int kill = -1;
+        for (int w = 0; w < _emWaves.Count; w++)
+        {
+            var wave = _emWaves[w];
+            bool armed = w == _emWaveArmed;
+            var box = UiRow($"##emwave{w}", armed, AcEdit, 40f);
+            EditorEnemyThumb(dl, ep.Enemies, wave.Enemy, box.Min + new Vector2(6, 2),
+                new Vector2(box.Min.X + 42, box.Max.Y - 2));
+            int span = wave.Events.Count > 0 ? wave.Events[^1].Time : 0;
+            RowText(box, 50f, wave.Name,
+                $"{wave.Events.Count} spawns · {span} ticks", AcEdit, armed,
+                reserve: 30f);
+            RowTrail(box, armed ? "armed" : "", Shade(AcGo, 1f));
+            if (box.Clicked)
+            {
+                _emWaveArmed = armed ? -1 : w;
+                if (_emWaveArmed >= 0) _emTool = 5;
+            }
+            if (box.Hovered)
+            {
+                ImGui.SetTooltip(armed
+                    ? "armed - click on the map to stamp it\nclick here to disarm · right-click deletes"
+                    : "click to arm the Place tool with this wave\nright-click deletes");
+                if (ImGui.IsMouseClicked(ImGuiMouseButton.Right)) kill = w;
+            }
+        }
+        if (kill >= 0)
+        {
+            _emWaves.RemoveAt(kill);
+            if (_emWaveArmed == kill) _emWaveArmed = -1;
+            else if (_emWaveArmed > kill) _emWaveArmed--;
+        }
     }
 
     /// <summary>Loaded, non-blank enemy ids passing a filter (shared by the pickers).</summary>
