@@ -25,17 +25,18 @@ public sealed unsafe partial class App
     private int _edMode;                    // 0 = levels, 1 = script, 2 = enemies
     private int _edLevelIdx;                // selected level (index into _edEp.Levels)
     private float _edListW = 240f;
+    private readonly byte[] _edLevelFilter = new byte[48];
     private string _edStatus = "";
     private bool _edConfirmRevert;
     private bool _edConfirmBlank;
     private bool _editorFocused;            // the editor window holds the keyboard
     private int _evSelectOnce = -1;         // CLI-aimed event selection, applied after load
 
-    /// <summary>The "--edtool N" entry point: arm a map tool (5 = spawn, with its palette).</summary>
+    /// <summary>The "--edtool N" entry point: arm a map tool (5+ = spawn tools, with their palette).</summary>
     public void EditorTool(int tool)
     {
-        _emTool = Math.Clamp(tool, 0, 5);
-        if (_emTool == 5) { _emPalette = true; _emPaletteMode = 1; }
+        _emTool = Math.Clamp(tool, 0, EmSpawnSelect);
+        if (_emTool >= EmSpawnPlace) { _emPalette = true; _emPaletteMode = 1; }
     }
 
     /// <summary>The "--edzoom F" entry point: set the map canvas zoom.</summary>
@@ -112,6 +113,7 @@ public sealed unsafe partial class App
         _emTimeRuler = null;
         _emHealth = null;
         _emUndo.Clear();
+        _emRedo.Clear();
         _emCanvasScrolled = false;
         _emSelSet.Clear();
         _emSelEvent = -1;
@@ -210,6 +212,8 @@ public sealed unsafe partial class App
     {
         BandBegin("edband", AcEdit);
 
+        // Project and workspace are one compact cluster. Keep them adjacent (and explicitly
+        // in this one-row band) so the episode picker never reads like a separate header.
         BandLabel("episode");
         ImGui.SetNextItemWidth(110);
         if (ImGui.BeginCombo("##edep", $"Episode {ep.Number}{(ep.Dirty ? " *" : "")}"))
@@ -235,14 +239,6 @@ public sealed unsafe partial class App
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("Which of the five episode slots is being edited.\n" +
                              "The engine knows exactly five; new content replaces one of them.");
-        ImGui.SameLine(0, 5);
-        if (UiButton("New", AcEdit,
-                "Start a from-scratch episode in this slot: one blank level and a\n" +
-                "minimal script (play it, then episode complete). The enemy table\n" +
-                "carries over - levels need enemies to spawn. Nothing is written\n" +
-                "until you save."))
-            _edConfirmBlank = true;
-
         BandDivider();
         SegBar("##edmode", ref _edMode, AcEdit, 250f,
             ("Levels", "The tyrian{N}.lvl side: maps, events and per-level settings."),
@@ -252,6 +248,13 @@ public sealed unsafe partial class App
                 : $"The enemyDat table embedded in tyrian{ep.Number}.lvl."));
 
         BandDivider();
+        if (UiButton("New", AcEdit,
+                "Start a from-scratch episode in this slot: one blank level and a\n" +
+                "minimal script (play it, then episode complete). The enemy table\n" +
+                "carries over - levels need enemies to spawn. Nothing is written\n" +
+                "until you save."))
+            _edConfirmBlank = true;
+        ImGui.SameLine(0, 5);
         bool canPlaytest = EditorLevel() != null;
         if (UiButton("Playtest", AcGo, "Run the selected level in the playback simulation,\n" +
                 "edits and all - nothing needs to be saved first.\n" +
@@ -461,12 +464,21 @@ public sealed unsafe partial class App
 
     private void DrawEditorLevelList(EditableEpisode ep)
     {
+        UiFilter("##edlvfilter", "find a level", _edLevelFilter,
+            ImGui.GetContentRegionAvail().X, AcEdit);
+        string filter = BufText(_edLevelFilter).Trim();
         float footer = ImGui.GetFrameHeight() * 2 + 14f;
         ImGui.BeginChild("edlvrows", new Vector2(0, -footer));
+        int shown = 0;
+        bool selectedShown = false;
         for (int i = 0; i < ep.Levels.Count; i++)
         {
             var lv = ep.Levels[i];
             string name = EditorLevelName(i + 1);
+            if (filter.Length > 0 && !Matches(filter, name, (i + 1).ToString(),
+                    lv.ShapeChar.ToString(), lv.Events.Count.ToString())) continue;
+            shown++;
+            if (i == _edLevelIdx) selectedShown = true;
             var row = UiRow($"##edlv{i}", i == _edLevelIdx, AcEdit, 40f);
             RowText(row, 12f, $"#{i + 1:00}  {(name.Length > 0 ? name : "(no script entry)")}",
                 $"tiles {lv.ShapeChar}   events {lv.Events.Count}", AcEdit, row.Selected,
@@ -477,9 +489,12 @@ public sealed unsafe partial class App
                 _emObjects = null;
                 _emTimeRuler = null;
                 _emUndo.Clear();
+                _emRedo.Clear();
                 _evSelected = -1;
             }
         }
+        if (shown == 0)
+            UiEmpty("no levels match", "clear the filter to see the whole episode", AcEdit);
         ImGui.EndChild();
 
         ImGui.Dummy(new Vector2(0, 3));
@@ -496,7 +511,7 @@ public sealed unsafe partial class App
         }
         ImGui.SameLine(0, 5);
         if (UiButton("Duplicate", AcEdit, "A copy of the selected level, at the end of the file.",
-                w, full || EditorLevel() == null))
+                w, full || EditorLevel() == null || !selectedShown))
         {
             var src = EditorLevel()!;
             ep.Levels.Add(src.Clone());
@@ -507,7 +522,7 @@ public sealed unsafe partial class App
         ImGui.SameLine(0, 5);
         if (UiButton("Delete", AcEnemy, "Remove the selected level. ]L lines pointing at later\n" +
                 "levels are renumbered; lines pointing at this one go dead.", w,
-                EditorLevel() == null || ep.Levels.Count <= 1))
+                EditorLevel() == null || ep.Levels.Count <= 1 || !selectedShown))
         {
             ep.Levels.RemoveAt(_edLevelIdx);
             RenumberScriptLevels(ep, removedAt: _edLevelIdx + 1);
@@ -518,7 +533,7 @@ public sealed unsafe partial class App
 
         float w2 = (ImGui.GetContentRegionAvail().X - 5f) / 2f;
         if (UiButton("Move up", AcEdit, "Swap with the level above; ]L lines follow.", w2,
-                _edLevelIdx <= 0))
+                _edLevelIdx <= 0 || !selectedShown))
         {
             (ep.Levels[_edLevelIdx - 1], ep.Levels[_edLevelIdx]) =
                 (ep.Levels[_edLevelIdx], ep.Levels[_edLevelIdx - 1]);
@@ -529,7 +544,7 @@ public sealed unsafe partial class App
         }
         ImGui.SameLine(0, 5);
         if (UiButton("Move down", AcEdit, "Swap with the level below; ]L lines follow.", w2,
-                EditorLevel() == null || _edLevelIdx >= ep.Levels.Count - 1))
+                EditorLevel() == null || _edLevelIdx >= ep.Levels.Count - 1 || !selectedShown))
         {
             (ep.Levels[_edLevelIdx + 1], ep.Levels[_edLevelIdx]) =
                 (ep.Levels[_edLevelIdx], ep.Levels[_edLevelIdx + 1]);

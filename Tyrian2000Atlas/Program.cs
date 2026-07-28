@@ -234,7 +234,7 @@ internal static unsafe class Program
         if (eptArg >= 0)
             app.EditorPlaytestCli(
                 eptArg + 1 < args.Length && int.TryParse(args[eptArg + 1], out int epl) ? epl : -1);
-        // "--edtool N": arm a map-editor tool (5 = spawn); "--maximize <id>": open a
+        // "--edtool N": arm a map-editor tool (5+ = spawn tools); "--maximize <id>": open a
         // reference window maximized (editor, enemies, music, ...).
         int etoolArg = Array.IndexOf(args, "--edtool");
         if (etoolArg >= 0 && etoolArg + 1 < args.Length && int.TryParse(args[etoolArg + 1], out int etool))
