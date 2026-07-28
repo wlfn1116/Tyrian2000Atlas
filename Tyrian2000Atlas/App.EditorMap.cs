@@ -84,6 +84,9 @@ public sealed unsafe partial class App
     private int _emSpawnPanel;            // 0 brush, 1 selection, 2 waves
     private int _emSelLink = 1;           // the link number the bulk-assign field holds
     private int _emSelStagger = 8;        // ticks per member for the stagger op
+    private int _emRepeatCount = 3;        // extra copies made by the encounter repeater
+    private int _emRepeatGap = 180;        // time between repeated starts
+    private bool _emRepeatMirror;          // alternate copies across the playfield centre
 
     /// <summary>A wave saved off a selection: relative times, absolute Xs shifted as one.</summary>
     private sealed class WaveStamp
@@ -200,14 +203,15 @@ public sealed unsafe partial class App
 
     private void DrawMapToolStrip(EditableEpisode ep, EditableLevel lv)
     {
-        // A small contextual command deck: creation tools own the first row; navigation,
-        // recovery and view state own the second. Everything stays visible in the detail pane
-        // instead of the useful controls falling off its right edge.
-        BandBegin("emband", AcEdit, 2);
+        // A maximized editor has enough room for one compact command line. Smaller layouts
+        // retain the relaxed two-row deck instead of crushing labels into unreadable chips.
+        bool oneRow = ImGui.GetContentRegionAvail().X >= 830f;
+        float groupGap = oneRow ? 4f : 10f;
+        BandBegin("emband", AcEdit, oneRow ? 1 : 2);
 
         // What is being edited comes first: the terrain, or the spawns living on it.
         int mode = SpawnMode ? 1 : 0;
-        if (SegBar("##emmode2", ref mode, AcEdit, 168f,
+        if (SegBar("##emmode2", ref mode, AcEdit, oneRow ? 128f : 168f,
                 ("Terrain", "Paint the three background layers with tiles and stamps."),
                 ("Spawns", "Place, select and shape the enemies directly on the map.")))
         {
@@ -215,15 +219,15 @@ public sealed unsafe partial class App
             else { _emLastSpawnTool = Math.Clamp(_emTool, EmSpawnPlace, EmSpawnSelect); _emTool = _emLastTerrainTool; }
         }
 
-        BandDivider();
+        BandDivider(groupGap);
         if (!SpawnMode)
         {
-            SegBar("##emlayer", ref _emLayer, AcEdit, 150f,
+            SegBar("##emlayer", ref _emLayer, AcEdit, oneRow ? 108f : 150f,
                 ("BG1", "Ground layer: 14x300 cells, the gameplay length of the level.  (key 1)"),
                 ("BG2", "Middle layer: 14x600 cells, scrolls faster, blended over BG1.  (key 2)"),
                 ("BG3", "Cloud layer: 15x600 cells, fastest scroll.  (key 3)"));
-            BandDivider();
-            SegBar("##emtool", ref _emTool, AcEdit, 280f,
+            BandDivider(groupGap);
+            SegBar("##emtool", ref _emTool, AcEdit, oneRow ? 210f : 280f,
                 ("Paint", "Left-drag paints the brush.  (B)\nRight-click picks a tile; right-DRAG grabs a multi-tile stamp."),
                 ("Erase", "Left-drag clears cells to empty.  (E)"),
                 ("Pick", "Left-click reads a tile into the brush; drag grabs a stamp.  (I)"),
@@ -233,7 +237,7 @@ public sealed unsafe partial class App
         else
         {
             int stool = _emTool - EmSpawnPlace;
-            SegBar("##emstool", ref stool, AcEdit, 280f,
+            SegBar("##emstool", ref stool, AcEdit, oneRow ? 210f : 280f,
                 ("Place", "Click drops the brush (or the armed wave).  (S)\n" +
                           "Markers still select and drag; right-click adds a level event."),
                 ("Erase", "Click or drag across spawn markers to remove them.  (E)\n" +
@@ -248,32 +252,43 @@ public sealed unsafe partial class App
         if (SpawnMode && _emPaletteMode != 1) { _emPalette = true; _emPaletteMode = 1; }
         if (!SpawnMode) _emPaletteMode = 0;
 
+        if (oneRow) BandDivider(groupGap);
         if (UiButton("Undo", AcEdit,
                 _emUndo.Count > 0 ? $"Undo {_emUndo[^1].Label}  (Ctrl+Z)" : "Nothing to undo.",
-                58f, _emUndo.Count == 0))
+                oneRow ? 42f : 58f, _emUndo.Count == 0))
             UndoMap(ep);
-        ImGui.SameLine(0, 5);
+        ImGui.SameLine(0, oneRow ? 3f : 5f);
         if (UiButton("Redo", AcEdit,
                 _emRedo.Count > 0 ? $"Redo {_emRedo[^1].Label}  (Ctrl+Y / Ctrl+Shift+Z)" : "Nothing to redo.",
-                58f, _emRedo.Count == 0))
+                oneRow ? 42f : 58f, _emRedo.Count == 0))
             RedoMap(ep);
 
-        BandDivider();
-        BandLabel("zoom");
-        ImGui.SetNextItemWidth(100);
+        BandDivider(groupGap);
+        if (!oneRow) BandLabel("zoom");
+        ImGui.SetNextItemWidth(oneRow ? 50f : 100f);
         ImGui.SliderFloat("##emzoom", ref _emZoom, 0.25f, 4f, "%.2fx");
         SliderReset(ref _emZoom, 1f, "Ctrl+wheel over the map does this too.");
 
-        BandDivider();
-        UiToggle("spawns", ref _emShowSpawns, AcEdit,
-            "Show placed enemy sprites while a terrain tool is active.\n" +
-            "Spawn tools always show them so they remain editable.", 84f);
-        ImGui.SameLine(0, 5);
+        BandDivider(groupGap);
+        if (!oneRow)
+        {
+            UiToggle("spawns", ref _emShowSpawns, AcEdit,
+                "Show placed enemy sprites while a terrain tool is active.\n" +
+                "Spawn tools always show them so they remain editable.", 84f);
+            ImGui.SameLine(0, 5);
+        }
         // The remaining view switches live behind one button: they are set-and-forget.
-        if (UiButton("view...", AcEdit, "Grid, layer dimming, flight paths, the screen\nframe and the side panel."))
+        if (UiButton(oneRow ? "View" : "view...", AcEdit,
+                "Spawn visibility, grid, layer dimming, flight paths, the screen\nframe and the side panel.",
+                oneRow ? 44f : 0f))
             ImGui.OpenPopup("##emview");
         if (ImGui.BeginPopup("##emview"))
         {
+            ImGui.Checkbox("show spawns", ref _emShowSpawns);
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Show placed enemy sprites while a terrain tool is active.\n" +
+                                 "Spawn tools always show them so they remain editable.");
+            ImGui.Separator();
             ImGui.Checkbox("cell grid", ref _emGrid);
             ImGui.Checkbox("dim other layers", ref _emDimOthers);
             ImGui.Checkbox("flight paths", ref _emPaths);
@@ -289,20 +304,26 @@ public sealed unsafe partial class App
             ImGui.EndPopup();
         }
 
-        BandDivider();
+        BandDivider(groupGap);
         var cues = EditorCues(lv);
-        if (UiButton(cues.Count == 0 ? "cues" : $"cues {cues.Count}", AcRoutes,
+        string cueLabel = oneRow ? "Cues" : cues.Count == 0 ? "cues" : $"cues {cues.Count}";
+        if (UiButton(cueLabel, AcRoutes,
                 "Session navigation cues for this level. Add them at the view centre\n" +
-                "or press K with the mouse over the map. They also appear on the pacing strip."))
+                $"or press K with the mouse over the map. They also appear on the pacing strip.\n\n{cues.Count} saved.",
+                oneRow ? 44f : 0f))
             ImGui.OpenPopup("##emcues");
         DrawCuePopup(lv, cues);
 
-        BandDivider();
+        BandDivider(groupGap);
         var health = EnsureHealth(ep, lv);
-        if (UiButton(health.Count == 0 ? "check: ok" : $"check: {health.Count}",
+        string healthLabel = oneRow
+            ? health.Count == 0 ? "OK" : $"! {health.Count}"
+            : health.Count == 0 ? "check: ok" : $"check: {health.Count}";
+        if (UiButton(healthLabel,
                 health.Count == 0 ? AcGo : AcSim,
                 "Live level checks: does it end, will every spawn be visible in game,\n" +
-                "is anything unreachable. Click a finding to jump to it."))
+                "is anything unreachable. Click a finding to jump to it.",
+                oneRow ? 44f : 0f))
             ImGui.OpenPopup("##emhealth");
         if (ImGui.BeginPopup("##emhealth"))
         {
@@ -316,7 +337,8 @@ public sealed unsafe partial class App
             ImGui.EndPopup();
         }
 
-        BandDivider();
+        BandDivider(groupGap);
+        bool showStateNote = !oneRow || ImGui.GetContentRegionAvail().X >= 65f;
         string brush;
         if (SpawnMode)
         {
@@ -329,14 +351,15 @@ public sealed unsafe partial class App
                     $"wave: {_emWaves[_emWaveArmed].Name}",
                 _ => $"enemy {_emSpawnEnemy}" + (_emFormation > 0 ? $" x{_emFormCount}" : "")
             };
-            BandNote(brush, UiFaint);
+            if (showStateNote) BandNote(brush, UiFaint);
         }
         else
         {
             brush = _emStampW * _emStampH > 1 ? $"stamp {_emStampW}x{_emStampH}" : $"tile {_emStamp[0]}";
             if (_emScatter && _emTool is 0 or 4) brush += $" · scatter {_emScatterPct}%";
-            BandNote($"{brush}   ·   slots {lv.SlotsUsed(_emLayer)}/{EditableLevel.SlotLimit(_emLayer)}",
-                UiFaint);
+            if (showStateNote)
+                BandNote($"{brush}   ·   slots {lv.SlotsUsed(_emLayer)}/{EditableLevel.SlotLimit(_emLayer)}",
+                    UiFaint);
         }
         BandEnd();
     }
@@ -828,6 +851,7 @@ public sealed unsafe partial class App
         var dl = ImGui.GetWindowDrawList();
 
         bool held = ImGui.InvisibleButton("##emminibtn", new Vector2(Math.Max(8, w), Math.Max(8, h)));
+        bool hot = ImGui.IsItemHovered();
         bool active = ImGui.IsItemActive();
 
         // BG1 fill density per strip row (300 map rows onto h pixels).
@@ -877,12 +901,19 @@ public sealed unsafe partial class App
         dl.AddRect(new Vector2(Px(p.X), vy0), new Vector2(Px(p.X + w), Math.Max(vy1, vy0 + 4)),
             Shade(AcPlayer, 0.95f, 200));
 
-        if (active || held)
+        if (hot || active)
         {
             float cv = (ImGui.GetMousePos().Y - p.Y) / h * LevelRenderer.CanvasH;
-            _emScrollToY = cv;
+            float scrubY = Px(Math.Clamp(ImGui.GetMousePos().Y, p.Y + 1f, p.Y + h - 1f));
+            // Match the pacing strip's blue hover/scrub marker, rotated for this vertical
+            // whole-level view.
+            dl.AddLine(new Vector2(p.X + 1f, scrubY), new Vector2(p.X + w - 1f, scrubY),
+                Shade(AcPlayer, 1.15f, active ? (byte)245 : (byte)175),
+                active ? 2f : 1f);
+            int t = TimeForScroll(lv, ObjectPlacer.YBase - cv);
+            ImGui.SetTooltip($"t {Math.Max(0, t)} - whole level · drag to scrub");
+            if (active || held) _emScrollToY = cv;
         }
-        if (ImGui.IsItemHovered() || active) ImGui.SetTooltip("the whole level - drag to scrub");
         WellEnd();
     }
 
@@ -2718,6 +2749,25 @@ public sealed unsafe partial class App
         if (UiButton("same time", AcEdit, "Everyone fires at the first member's time.", w2))
             BulkRetime(ep, lv, idxs, (order, count, t0, t1, torig) => t0);
 
+        // ---- turn one authored encounter into a rhythmic sequence ----
+        UiSection("Repeat encounter", AcRoutes);
+        ImGui.SetNextItemWidth(58f);
+        ImGui.InputInt("copies", ref _emRepeatCount);
+        _emRepeatCount = Math.Clamp(_emRepeatCount, 1, 12);
+        ImGui.SetNextItemWidth(76f);
+        ImGui.InputInt("interval", ref _emRepeatGap);
+        _emRepeatGap = Math.Clamp(_emRepeatGap, 1, 10000);
+        UiToggle("alternate mirror", ref _emRepeatMirror, AcRoutes,
+            "Every other copy is reflected across the playfield centre.\n" +
+            "Excellent for call-and-response attack patterns.");
+        if (UiButton($"repeat {idxs.Count} x {_emRepeatCount}", AcRoutes,
+                "Create this many additional copies at the interval above.\n" +
+                "Relative timing, enemies and links are preserved; the new copies\n" +
+                "become the selection. The whole sequence is one undo step.",
+                ImGui.GetContentRegionAvail().X,
+                lv.Events.Count + idxs.Count * _emRepeatCount > EditableLevel.MaxEvents))
+            RepeatSelection(ep, lv, idxs);
+
         // ---- shape in space ----
         UiSection("Position", AcEdit);
         if (UiButton("mirror X", AcEdit,
@@ -2789,6 +2839,64 @@ public sealed unsafe partial class App
     /// <summary>Rewrite the selection's times through a shape function of (time-order,
     /// count, first, last, member's original time), then re-sort with selections following.
     /// Original times are snapshotted first, so shapes read stable inputs.</summary>
+    private void RepeatSelection(EditableEpisode ep, EditableLevel lv, List<int> idxs)
+    {
+        var source = idxs.Where(i => i >= 0 && i < lv.Events.Count &&
+                EventCatalog.IsSpawnType(lv.Events[i].Type))
+            .OrderBy(i => lv.Events[i].Time).ToList();
+        if (source.Count == 0) return;
+        int total = source.Count * _emRepeatCount;
+        if (lv.Events.Count + total > EditableLevel.MaxEvents)
+        {
+            _edStatus = $"Repeater needs {total} free event slots; only " +
+                $"{EditableLevel.MaxEvents - lv.Events.Count} remain.";
+            return;
+        }
+        int lastTime = source.Max(i => (int)lv.Events[i].Time) + _emRepeatGap * _emRepeatCount;
+        if (lastTime > 65499)
+        {
+            _edStatus = "That repeat interval would run past the event-time limit.";
+            return;
+        }
+
+        Dictionary<int, float>? xOf = null;
+        if (_emRepeatMirror)
+        {
+            EnsureEditorObjects(ep, lv);
+            xOf = new Dictionary<int, float>();
+            if (_emObjects != null)
+                foreach (var o in _emObjects)
+                    if (o.EventIndex >= 0 && source.Contains(o.EventIndex) &&
+                        !xOf.ContainsKey(o.EventIndex))
+                        xOf[o.EventIndex] = o.X;
+        }
+
+        float centre = 48f + (_engaged ? GameSim.EngagedViewW : GameSim.ViewW) * 0.5f;
+        PushEventsUndo(lv, "repeat encounter");
+        _emSelSet.Clear();
+        for (int repeat = 1; repeat <= _emRepeatCount; repeat++)
+        {
+            bool mirror = _emRepeatMirror && (repeat & 1) != 0;
+            foreach (int index in source)
+            {
+                var ev = lv.Events[index];
+                ev.Time = (ushort)(ev.Time + repeat * _emRepeatGap);
+                if (mirror && ev.Dat2 is not (-99) and not (-200) &&
+                    xOf != null && xOf.TryGetValue(index, out float x))
+                    ev.Dat2 = (short)Math.Clamp(
+                        ev.Dat2 + (int)MathF.Round((2f * centre - x) - x),
+                        short.MinValue, short.MaxValue);
+                _emSelSet.Add(lv.Events.Count);
+                lv.Events.Add(ev);
+            }
+        }
+        _emSelEvent = _emSelSet.Count > 0 ? _emSelSet.Max() : -1;
+        NoteEventsChanged(ep);
+        SortEvents(lv);
+        _edStatus = $"Repeated {source.Count}-spawn encounter {_emRepeatCount} times" +
+            (_emRepeatMirror ? " with alternating mirrors." : ".");
+    }
+
     private void BulkRetime(EditableEpisode ep, EditableLevel lv, List<int> idxs,
         Func<int, int, int, int, int, int> shape)
     {

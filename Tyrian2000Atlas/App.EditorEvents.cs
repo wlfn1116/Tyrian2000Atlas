@@ -49,6 +49,7 @@ public sealed unsafe partial class App
         if (UiButton("+ Add", AcEdit, "Insert a new event after the selected one\n(same time, so it runs in the same batch).",
                 0f, lv.Events.Count >= EditableLevel.MaxEvents))
         {
+            PushEventsUndo(lv, "add event");
             var t = _evSelected >= 0 && _evSelected < lv.Events.Count
                 ? lv.Events[_evSelected].Time : (ushort)(lv.Events.Count > 0 ? lv.Events[^1].Time : 30);
             int at = _evSelected >= 0 ? _evSelected + 1 : lv.Events.Count;
@@ -60,6 +61,7 @@ public sealed unsafe partial class App
         ImGui.SameLine(0, 5);
         if (UiButton("Duplicate", AcEdit, "", 0f, _evSelected < 0))
         {
+            PushEventsUndo(lv, "duplicate event");
             lv.Events.Insert(_evSelected + 1, lv.Events[_evSelected]);
             _evSelected++;
             _evScrollTo = true;
@@ -68,10 +70,22 @@ public sealed unsafe partial class App
         ImGui.SameLine(0, 5);
         if (UiButton("Delete", AcEnemy, "", 0f, _evSelected < 0))
         {
+            PushEventsUndo(lv, "delete event");
             lv.Events.RemoveAt(_evSelected);
             _evSelected = Math.Min(_evSelected, lv.Events.Count - 1);
             NoteEventsChanged(ep);
         }
+
+        BandDivider();
+        if (UiButton("Undo", AcEdit,
+                _emUndo.Count > 0 ? $"Undo {_emUndo[^1].Label}  (Ctrl+Z)" : "Nothing to undo.",
+                54f, _emUndo.Count == 0))
+            UndoMap(ep);
+        ImGui.SameLine(0, 5);
+        if (UiButton("Redo", AcEdit,
+                _emRedo.Count > 0 ? $"Redo {_emRedo[^1].Label}  (Ctrl+Y)" : "Nothing to redo.",
+                54f, _emRedo.Count == 0))
+            RedoMap(ep);
 
         BandDivider();
         BandLabel("show");
@@ -299,6 +313,7 @@ public sealed unsafe partial class App
 
         if (changed)
         {
+            PushEventsUndo(lv, "edit event");
             lv.Events[_evSelected] = ev;
             NoteEventsChanged(ep);
         }
@@ -394,6 +409,7 @@ public sealed unsafe partial class App
             if (!EnemyListRow(table, id, selected: false)) continue;
             if (_evSelected >= 0 && _evSelected < lv.Events.Count)
             {
+                PushEventsUndo(lv, "change event enemy");
                 var ev = lv.Events[_evSelected];
                 ev.Dat = (short)id;
                 lv.Events[_evSelected] = ev;

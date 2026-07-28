@@ -228,6 +228,11 @@ internal static unsafe class Program
                 edArg + 1 < args.Length && int.TryParse(args[edArg + 1], out int em) ? em : -1,
                 edArg + 2 < args.Length && int.TryParse(args[edArg + 2], out int el) ? el : -1,
                 edArg + 3 < args.Length && int.TryParse(args[edArg + 3], out int et) ? et : -1);
+            if (Array.IndexOf(args, "--ednew") >= 0) app.ShowNewLevelStudio();
+            if (Array.IndexOf(args, "--edrename") >= 0) app.ShowLevelRename();
+            if (Array.IndexOf(args, "--edsnapshots") >= 0) app.ShowSnapshotShelf();
+            if (Array.IndexOf(args, "--edselect") >= 0) app.SelectFirstEditorSpawn();
+            if (Array.IndexOf(args, "--edrepeat") >= 0) app.RepeatFirstEditorSpawn();
         // "--edplaytest [levelIdx]": press the editor's Playtest button on startup, so the
         // in-memory-level -> playback path is screenshotable.
         int eptArg = Array.IndexOf(args, "--edplaytest");
@@ -1413,6 +1418,58 @@ internal static unsafe class Program
             ok &= parsed.ShapeChar == 'w';
             ok &= slot >= 0 && parsed.ResolveShapeId(0, (byte)slot) == 5;
             ok &= parsed.Bg1[10 * T2A.Tyrian.Level.Bg1Cols + 3] == slot;
+
+            // Renaming must update every route to a file while preserving all non-name
+            // fields. An unnamed new level must receive a usable script entry.
+            int routeLine = e.ScriptLines.FindIndex(line =>
+                line.Length >= 27 && line[0] == ']' && line[1] == 'L' &&
+                T2A.Tyrian.EpisodeScript.AtoiAt(line, 25) > 0);
+            bool renamedExisting = routeLine >= 0;
+            if (renamedExisting)
+            {
+                var before = T2A.Tyrian.EpisodeScript.ParseLevelLine(
+                    e.ScriptLines[routeLine], 0);
+                var matchingBefore = e.ScriptLines
+                    .Where(line => line.Length >= 27 && line[0] == ']' && line[1] == 'L' &&
+                        T2A.Tyrian.EpisodeScript.AtoiAt(line, 25) == before.LvlFileNum)
+                    .Select(line => T2A.Tyrian.EpisodeScript.ParseLevelLine(line, 0))
+                    .ToList();
+                int changed = T2A.App.RenameLevelScriptEntries(
+                    e, before.LvlFileNum, "JOY RIDE");
+                var matchingAfter = e.ScriptLines
+                    .Where(line => line.Length >= 27 && line[0] == ']' && line[1] == 'L' &&
+                        T2A.Tyrian.EpisodeScript.AtoiAt(line, 25) == before.LvlFileNum)
+                    .Select(line => T2A.Tyrian.EpisodeScript.ParseLevelLine(line, 0))
+                    .ToList();
+                renamedExisting = changed == matchingBefore.Count &&
+                    matchingAfter.Count == matchingBefore.Count;
+                for (int i = 0; renamedExisting && i < matchingAfter.Count; i++)
+                {
+                    var oldRoute = matchingBefore[i];
+                    var newRoute = matchingAfter[i];
+                    renamedExisting =
+                        newRoute.Name.Trim() == "JOY RIDE" &&
+                        newRoute.NextLevel == oldRoute.NextLevel &&
+                        newRoute.Song == oldRoute.Song &&
+                        newRoute.LvlFileNum == oldRoute.LvlFileNum &&
+                        newRoute.NormalBonus == oldRoute.NormalBonus &&
+                        newRoute.BonusLevel == oldRoute.BonusLevel;
+                }
+            }
+
+            var unnamed = new T2A.Tyrian.EditableEpisode();
+            unnamed.Levels.Add(T2A.Tyrian.EditableLevel.CreateNew('w'));
+            int previousEntries = T2A.App.RenameLevelScriptEntries(unnamed, 1, "FIRST");
+            int namedLine = unnamed.ScriptLines.FindIndex(line =>
+                line.Length >= 27 && line[0] == ']' && line[1] == 'L');
+            bool namedNew = previousEntries == 0 && namedLine >= 0 &&
+                T2A.Tyrian.EpisodeScript.ParseLevelLine(
+                    unnamed.ScriptLines[namedLine], 0).Name.Trim() == "FIRST";
+            ok &= renamedExisting && namedNew;
+            Console.WriteLine(renamedExisting && namedNew
+                ? "level naming: routes + unnamed level OK"
+                : "level naming: FAILED");
+
             // The script writer must be readable by the engine-style decryptor too.
             string scr = Path.Combine(tmp, "levels1.dat");
             File.WriteAllBytes(scr, T2A.Tyrian.EpisodeScript.EncryptStrings(
