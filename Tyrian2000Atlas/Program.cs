@@ -38,6 +38,8 @@ internal static unsafe class Program
             return CheckTimelines();
         if (Array.IndexOf(args, "--checkalllevels") >= 0)
             return CheckAllLevels();
+        if (Array.IndexOf(args, "--checkeditor") >= 0)
+            return CheckEditor();
         if (Array.IndexOf(args, "--auditcontrol") >= 0)
             return AuditControlEvents();
         if (Array.IndexOf(args, "--auditspawns") >= 0)
@@ -97,6 +99,10 @@ internal static unsafe class Program
         // No NavEnableKeyboard: the arrow/page keys are atlas shortcuts (level switching,
         // canvas jumps) and must not also wander the widget focus.
         io.ConfigFlags |= ImGuiConfigFlags.DockingEnable;
+        // Windows move by their title bar only. The default (drag anywhere empty) turns
+        // every canvas drag that misses an item into a window drag - painting in the map
+        // editor moved the whole editor window.
+        io.ConfigWindowsMoveFromTitleBarOnly = true;
         io.IniFilename = null;   // window/panel state lives in settings.json, not imgui.ini
         // One house style for every window the app opens, so the floating playback HUD, the
         // reference browsers and every popup share the same rounded shell.
@@ -214,6 +220,37 @@ internal static unsafe class Program
         int qArg = Array.IndexOf(args, "--search");
         if (qArg >= 0 && qArg + 1 < args.Length) app.ShowSearch(args[qArg + 1]);
 
+        // "--showeditor [mode] [levelIdx]" opens the episode editor (0 levels, 1 script,
+        // 2 enemies), optionally on one level (0-based index into the episode's file).
+        int edArg = Array.IndexOf(args, "--showeditor");
+        if (edArg >= 0)
+            app.ShowEditor(
+                edArg + 1 < args.Length && int.TryParse(args[edArg + 1], out int em) ? em : -1,
+                edArg + 2 < args.Length && int.TryParse(args[edArg + 2], out int el) ? el : -1,
+                edArg + 3 < args.Length && int.TryParse(args[edArg + 3], out int et) ? et : -1);
+        // "--edplaytest [levelIdx]": press the editor's Playtest button on startup, so the
+        // in-memory-level -> playback path is screenshotable.
+        int eptArg = Array.IndexOf(args, "--edplaytest");
+        if (eptArg >= 0)
+            app.EditorPlaytestCli(
+                eptArg + 1 < args.Length && int.TryParse(args[eptArg + 1], out int epl) ? epl : -1);
+        // "--edtool N": arm a map-editor tool (5 = spawn); "--maximize <id>": open a
+        // reference window maximized (editor, enemies, music, ...).
+        int etoolArg = Array.IndexOf(args, "--edtool");
+        if (etoolArg >= 0 && etoolArg + 1 < args.Length && int.TryParse(args[etoolArg + 1], out int etool))
+            app.EditorTool(etool);
+        int maxArg = Array.IndexOf(args, "--maximize");
+        if (maxArg >= 0 && maxArg + 1 < args.Length)
+            app.MaximizeWindow(args[maxArg + 1]);
+        // "--detach <id>": open a reference window in the second OS window on startup.
+        int detArg = Array.IndexOf(args, "--detach");
+        if (detArg >= 0 && detArg + 1 < args.Length)
+            app.DetachWindow(args[detArg + 1]);
+        int ezArg = Array.IndexOf(args, "--edzoom");
+        if (ezArg >= 0 && ezArg + 1 < args.Length &&
+            float.TryParse(args[ezArg + 1], System.Globalization.CultureInfo.InvariantCulture, out float ez))
+            app.EditorZoom(ez);
+
         int mi = Array.IndexOf(args, "--mouse");
         var inv = System.Globalization.CultureInfo.InvariantCulture;
         System.Numerics.Vector2? fakeMouse = mi >= 0 && mi + 2 < args.Length
@@ -227,6 +264,75 @@ internal static unsafe class Program
         int fakeButton = mdi >= 0 && mdi + 1 < args.Length
             ? args[mdi + 1] switch { "left" => 0, "right" => 1, "middle" => 2, _ => -1 } : -1;
 
+        // ---- detached hosts: every reference window sent out of the main window gets its
+        // OWN OS window (drag it to any monitor; the native title bar moves, minimizes,
+        // maximizes; closing it sends the content home). Each host is a full SDL window +
+        // renderer + ImGui context; the content fills it edge to edge. ----
+        var hosts = new Dictionary<string, DetachedHost>();   // by reference-window id
+        uint mainWinId = SdlNs.SDL.GetWindowID(window);
+        int uishot2 = Array.IndexOf(args, "--uishot2");
+        bool shotMainDone = false, shotAuxDone = uishot2 < 0;
+
+        void EnterMainCtx()
+        {
+            ImGui.SetCurrentContext(ctx);
+            ImSdl.ImGuiImplSDL2.SetCurrentContext(ctx);
+        }
+        void EnterHostCtx(DetachedHost h)
+        {
+            ImGui.SetCurrentContext(h.Ctx);
+            ImSdl.ImGuiImplSDL2.SetCurrentContext(h.Ctx);
+        }
+        DetachedHost EnsureHost(string id)
+        {
+            if (hosts.TryGetValue(id, out var have)) return have;
+            var rect = app.DetachedRect(id);
+            var h = new DetachedHost { Id = id };
+            h.Window = SdlNs.SDL.CreateWindow($"{T2A.App.RefWindowTitle(id)} - Tyrian 2000 Atlas",
+                rect.X == int.MinValue ? SDL_WINDOWPOS_CENTERED : rect.X,
+                rect.Y == int.MinValue ? SDL_WINDOWPOS_CENTERED : rect.Y,
+                Math.Max(480, rect.W), Math.Max(340, rect.H),
+                SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+            h.Renderer = SdlNs.SDL.CreateRenderer(h.Window, -1,
+                SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+            h.WinId = SdlNs.SDL.GetWindowID(h.Window);
+            h.Ctx = ImGui.CreateContext();
+            EnterHostCtx(h);
+            var io2 = ImGui.GetIO();
+            io2.IniFilename = null;
+            io2.ConfigWindowsMoveFromTitleBarOnly = true;
+            T2A.App.ApplyGlobalStyle();
+            var abW = new ImSdl.SDLWindowPtr((ImSdl.SDLWindow*)(void*)h.Window.Handle);
+            var abR = new ImSdl.SDLRendererPtr((ImSdl.SDLRenderer*)(void*)h.Renderer.Handle);
+            ImSdl.ImGuiImplSDL2.InitForSDLRenderer(abW, abR);
+            ImSdl.ImGuiImplSDL2.SDLRenderer2Init(abR);
+            EnterMainCtx();
+            hosts[id] = h;
+            return h;
+        }
+        void RememberHostRect(DetachedHost h)
+        {
+            int w2, h2, x2, y2;
+            SdlNs.SDL.GetWindowSize(h.Window, &w2, &h2);
+            SdlNs.SDL.GetWindowPosition(h.Window, &x2, &y2);
+            app.RememberDetachedRect(h.Id, x2, y2, w2, h2);
+        }
+        void DestroyHost(DetachedHost h)
+        {
+            RememberHostRect(h);
+            // The App's texture caches hold textures made on this renderer; they must be
+            // released while the renderer still exists.
+            app.DropRendererCaches((nint)h.Renderer.Handle);
+            EnterHostCtx(h);
+            ImSdl.ImGuiImplSDL2.SDLRenderer2Shutdown();
+            ImSdl.ImGuiImplSDL2.Shutdown();
+            ImGui.DestroyContext(h.Ctx);
+            EnterMainCtx();
+            SdlNs.SDL.DestroyRenderer(h.Renderer);
+            SdlNs.SDL.DestroyWindow(h.Window);
+            hosts.Remove(h.Id);
+        }
+
         bool running = true;
         int frame = 0;
         while (running)
@@ -234,11 +340,29 @@ internal static unsafe class Program
             SdlNs.SDLEvent e = default;
             while (SdlNs.SDL.PollEvent(ref e) != 0)
             {
+                // Every windowed SDL event carries its windowID at the same offset, so the
+                // Window view of the union routes mouse, keyboard, text and window events
+                // alike. Anything not aimed at a detached host goes to the main context.
+                DetachedHost? target = null;
+                foreach (var h in hosts.Values)
+                    if (h.WinId == e.Window.WindowID) { target = h; break; }
+                if (target != null) EnterHostCtx(target);
                 ImSdl.ImGuiImplSDL2.ProcessEvent(new ImSdl.SDLEventPtr((ImSdl.SDLEvent*)&e));
+                if (target != null) EnterMainCtx();
+
                 if (e.Type == (uint)SdlNs.SDLEventType.Quit)
                     running = false;
+                const byte SDL_WINDOWEVENT_CLOSE = 14;
+                if (e.Type == (uint)SdlNs.SDLEventType.Windowevent && e.Window.Event == SDL_WINDOWEVENT_CLOSE)
+                {
+                    if (target != null)
+                        app.ReattachWindow(target.Id);   // its host tears down next frame
+                    else if (e.Window.WindowID == mainWinId)
+                        running = false;
+                }
             }
 
+            // ---- main window frame ----
             ImSdl.ImGuiImplSDL2.SDLRenderer2NewFrame();
             ImSdl.ImGuiImplSDL2.NewFrame();
             // "--mouse X Y": park the cursor at a fixed point so --uishot can capture
@@ -270,7 +394,8 @@ internal static unsafe class Program
             // runs off the UI thread and lands after a frame or two, and a shot taken before
             // it does catches the note view without its tails. Capped so a stuck measurement
             // cannot hold the run open.
-            if (uishot >= 0 && ++frame >= 5
+            frame++;
+            if (uishot >= 0 && !shotMainDone && frame >= 5
                 && (T2A.Tyrian.Audio.MusicTrack.RingOutsPending == 0 || frame > 400))
             {
                 int w, h; SdlNs.SDL.GetWindowSize(window, &w, &h);
@@ -281,13 +406,56 @@ internal static unsafe class Program
                     : Path.Combine(Environment.CurrentDirectory, "uishot.png");
                 T2A.Util.Png.WriteRgba(outp, w, h, buf);
                 Console.WriteLine($"Wrote UI screenshot {outp} ({w}x{h})");
-                running = false;
+                shotMainDone = true;
             }
 
             SdlNs.SDL.RenderPresent(renderer);
 
-            if (smoke && ++frame >= 3)
-                running = false;
+            // ---- detached host frames, one OS window per detached reference window ----
+            var wanted = app.DetachedIds();
+            foreach (var h in hosts.Values.Where(h => !wanted.Contains(h.Id)).ToList())
+                DestroyHost(h);
+            foreach (string id in wanted)
+            {
+                var h = EnsureHost(id);
+                EnterHostCtx(h);
+                ImSdl.ImGuiImplSDL2.SDLRenderer2NewFrame();
+                ImSdl.ImGuiImplSDL2.NewFrame();
+                ImGui.NewFrame();
+                try
+                {
+                    app.RenderAuxWindow(id, h.Renderer);
+                }
+                catch (Exception ex)
+                {
+                    WriteCrashLog(ex);
+                    throw;
+                }
+                ImGui.Render();
+                SdlNs.SDL.SetRenderDrawColor(h.Renderer, 24, 26, 32, 255);
+                SdlNs.SDL.RenderClear(h.Renderer);
+                ImSdl.ImGuiImplSDL2.SDLRenderer2RenderDrawData(ImGui.GetDrawData(),
+                    new ImSdl.SDLRendererPtr((ImSdl.SDLRenderer*)(void*)h.Renderer.Handle));
+
+                if (uishot2 >= 0 && !shotAuxDone && frame >= 5)
+                {
+                    int w, h2; SdlNs.SDL.GetWindowSize(h.Window, &w, &h2);
+                    var buf = new uint[w * h2];
+                    fixed (uint* bp = buf)
+                        SdlNs.SDL.RenderReadPixels(h.Renderer, default, Render.Gfx.SDL_PIXELFORMAT_ABGR8888, (nint)bp, w * 4);
+                    string outp = args[uishot2 + 1];
+                    T2A.Util.Png.WriteRgba(outp, w, h2, buf);
+                    Console.WriteLine($"Wrote detached screenshot {outp} ({w}x{h2})");
+                    shotAuxDone = true;
+                }
+
+                SdlNs.SDL.RenderPresent(h.Renderer);
+                RememberHostRect(h);
+                EnterMainCtx();
+            }
+
+            if (uishot >= 0 && shotMainDone && shotAuxDone) running = false;
+            if (smoke && frame >= 3) running = false;
         }
 
         if (persist)
@@ -301,11 +469,14 @@ internal static unsafe class Program
                 SdlNs.SDL.GetWindowPosition(window, &x, &y);
                 settings.WinW = w; settings.WinH = h; settings.WinX = x; settings.WinY = y;
             }
+            foreach (var h in hosts.Values) RememberHostRect(h);
             app.PopulateSettings(settings);
             settings.Save();
         }
 
+        foreach (var h in hosts.Values.ToList()) DestroyHost(h);
         app.Dispose();
+        EnterMainCtx();
         ImSdl.ImGuiImplSDL2.SDLRenderer2Shutdown();
         ImSdl.ImGuiImplSDL2.Shutdown();
         ImGui.DestroyContext(ctx);
@@ -315,6 +486,16 @@ internal static unsafe class Program
 
         Console.WriteLine("Clean exit.");
         return 0;
+    }
+
+    /// <summary>One detached reference window's OS host: window, renderer, ImGui context.</summary>
+    private sealed class DetachedHost
+    {
+        public string Id = "";
+        public uint WinId;
+        public SdlNs.SDLWindowPtr Window;
+        public SdlNs.SDLRendererPtr Renderer;
+        public ImGuiContextPtr Ctx;
     }
 
     /// <summary>
@@ -1152,6 +1333,123 @@ internal static unsafe class Program
                     $"band={o.Band} layer={o.UniformLayer + 1} y={o.ScreenY} " +
                     $"distance={o.UniformPathDistance}");
         }
+        return failed ? 1 : 0;
+    }
+
+    /// <summary>
+    /// The editor's file-format proof. 1) Load -> save of every stock episode must be
+    /// byte-identical for tyrian{N}.lvl and levels{N}.dat, and the enemy-table writer must be
+    /// a no-op on tyrian.hdt — that is what guarantees the game and the Engaged fork parse
+    /// anything the editor writes. 2) A synthetic episode with an added level must reload
+    /// through the ordinary parser with everything intact.
+    /// </summary>
+    static int CheckEditor()
+    {
+        string? dir = T2A.Tyrian.GameData.FindDataDir();
+        if (dir == null) { Console.Error.WriteLine("no data dir"); return 1; }
+        var gd = new T2A.Tyrian.GameData(dir);
+        bool failed = false;
+
+        static int FirstDiff(byte[] a, byte[] b)
+        {
+            int n = Math.Min(a.Length, b.Length);
+            for (int i = 0; i < n; i++) if (a[i] != b[i]) return i;
+            return a.Length == b.Length ? -1 : n;
+        }
+
+        foreach (var ep in gd.Episodes)
+        {
+            var e = T2A.Tyrian.EditableEpisode.Load(gd, ep);
+
+            byte[] lvlOrig = File.ReadAllBytes(Path.Combine(dir, e.LvlFileName));
+            byte[] lvlOut = e.BuildLvlBytes();
+            int d = FirstDiff(lvlOrig, lvlOut);
+            Console.WriteLine($"ep{ep.Number} {e.LvlFileName}: {lvlOut.Length} bytes " +
+                (d < 0 ? "round-trip OK" : $"DIFFERS at {d} (orig {lvlOrig.Length})"));
+            failed |= d >= 0;
+
+            string scriptPath = Path.Combine(dir, e.ScriptFileName);
+            if (File.Exists(scriptPath))
+            {
+                byte[] scOrig = File.ReadAllBytes(scriptPath);
+                byte[] scOut = e.BuildScriptBytes();
+                d = FirstDiff(scOrig, scOut);
+                Console.WriteLine($"ep{ep.Number} {e.ScriptFileName}: {e.ScriptLines.Count} lines " +
+                    (d < 0 ? "round-trip OK" : $"DIFFERS at {d}"));
+                failed |= d >= 0;
+            }
+
+            // The enemy-table writer must reproduce what it read, wherever the table lives.
+            var ed = gd.GetEnemyData(ep);
+            var (raw, _) = T2A.Tyrian.EnemyData.LocateBlock(dir, ep);
+            var patched = (byte[])raw.Clone();
+            T2A.Tyrian.EnemyData.WriteTable(e.Enemies, patched, ed.EnemyOffset);
+            d = FirstDiff(raw, patched);
+            Console.WriteLine($"ep{ep.Number} enemy table @{ed.EnemyOffset}: " +
+                (d < 0 ? "write-back OK" : $"DIFFERS at {d}"));
+            failed |= d >= 0;
+        }
+
+        // A synthetic edit has to survive the ordinary load path.
+        {
+            var ep1 = gd.Episodes[0];
+            var e = T2A.Tyrian.EditableEpisode.Load(gd, ep1);
+            var fresh = T2A.Tyrian.EditableLevel.CreateNew('w');
+            fresh.Events.Insert(2, new T2A.Tyrian.EventRec
+                { Time = 200, Type = 6, Dat = 25, Dat2 = 120, Dat4 = 9 });
+            int slot = fresh.EnsureSlot(0, 5);
+            if (slot >= 0) fresh.Cells(0)[10 * T2A.Tyrian.Level.Bg1Cols + 3] = (byte)slot;
+            e.Levels.Add(fresh);
+
+            string tmp = Path.Combine(Path.GetTempPath(), "t2a-checkeditor");
+            Directory.CreateDirectory(tmp);
+            string outPath = Path.Combine(tmp, "tyrian1.lvl");
+            File.WriteAllBytes(outPath, e.BuildLvlBytes());
+            var back = new T2A.Tyrian.LevelContainer(outPath);
+            bool ok = back.SectionCount == e.Levels.Count;
+            var parsed = T2A.Tyrian.Level.Parse(back, back.SectionCount);
+            ok &= parsed.Events.Length == fresh.Events.Count;
+            ok &= parsed.Events[2].Type == 6 && parsed.Events[2].Dat == 25;
+            ok &= parsed.ShapeChar == 'w';
+            ok &= slot >= 0 && parsed.ResolveShapeId(0, (byte)slot) == 5;
+            ok &= parsed.Bg1[10 * T2A.Tyrian.Level.Bg1Cols + 3] == slot;
+            // The script writer must be readable by the engine-style decryptor too.
+            string scr = Path.Combine(tmp, "levels1.dat");
+            File.WriteAllBytes(scr, T2A.Tyrian.EpisodeScript.EncryptStrings(
+                new[] { "*test section", "]L[ 9999 001 NEWLEVEL  01 19" }));
+            var lines = T2A.Tyrian.EpisodeScript.DecryptStrings(scr);
+            ok &= lines.Count == 2 && lines[1].Contains("NEWLEVEL");
+            var entry = T2A.Tyrian.EpisodeScript.ParseLevelLine(lines[1], 1);
+            ok &= entry.LvlFileNum == 19 && entry.Name == "NEWLEVEL ";
+            Console.WriteLine(ok ? "synthetic level: add + reload OK"
+                : "synthetic level: FAILED");
+            failed |= !ok;
+
+            // ... and it must actually PLAY: the same path the editor's Playtest button
+            // takes (ToLevel + the edited enemy table into GameSim). The scripted spawn has
+            // to appear on screen and the scripted event 11 has to end the level.
+            var edited = e.Enemies;
+            edited[25].Armor = 77;   // an enemy edit the sim must fly with
+            var simLv = fresh.ToLevel(e.Levels.Count);
+            var sim = new T2A.Tyrian.GameSim(gd, ep1, simLv,
+                gd.GetShapeTable(simLv.ShapeChar), T2A.Tyrian.EnemyData.FromRecords(edited));
+            sim.Reset();
+            int peak = 0, ticks = 0;
+            while (ticks < 4000 && !sim.Finished)
+            {
+                sim.Tick(draw: false);
+                ticks++;
+                peak = Math.Max(peak, sim.EnemyOnScreen);
+            }
+            bool played = peak > 0 && sim.Finished;
+            ok = played && T2A.Tyrian.EnemyData.FromRecords(edited).Get(25).Armor == 77;
+            Console.WriteLine(ok
+                ? $"synthetic level: playtest OK ({ticks} ticks, peak {peak} enemies, ended naturally)"
+                : $"synthetic level: playtest FAILED (ticks {ticks}, peak {peak}, finished {sim.Finished})");
+            failed |= !ok;
+        }
+
+        Console.WriteLine(failed ? "CHECKEDITOR FAILED" : "checkeditor passed");
         return failed ? 1 : 0;
     }
 

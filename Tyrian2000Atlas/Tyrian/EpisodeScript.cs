@@ -93,6 +93,30 @@ public static class EpisodeScript
         return result;
     }
 
+    /// <summary>
+    /// The inverse of <see cref="DecryptStrings"/>: length-prefix and re-encrypt every line.
+    /// Encrypting a decrypt is byte-identity, so an untouched script round-trips exactly.
+    /// </summary>
+    public static byte[] EncryptStrings(IEnumerable<string> lines)
+    {
+        using var ms = new MemoryStream();
+        foreach (var line in lines)
+        {
+            byte[] plain = Encoding.Latin1.GetBytes(line);
+            if (plain.Length > 255)
+                throw new InvalidOperationException("script line over 255 characters");
+            var buf = new byte[plain.Length];
+            for (int i = 0; i < plain.Length; i++)
+            {
+                // c[i] = p[i] ^ key ^ c[i-1] — the decryptor undoes exactly this.
+                buf[i] = (byte)(plain[i] ^ CryptKey[i % 10] ^ (i > 0 ? buf[i - 1] : 0));
+            }
+            ms.WriteByte((byte)plain.Length);
+            ms.Write(buf);
+        }
+        return ms.ToArray();
+    }
+
     /// <summary>Parse the script and return every ]L level definition in order.</summary>
     public static List<LevelEntry> ParseLevels(string path)
     {

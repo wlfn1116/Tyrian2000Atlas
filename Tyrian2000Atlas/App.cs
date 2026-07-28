@@ -11,6 +11,10 @@ namespace T2A;
 public sealed unsafe partial class App
 {
     private readonly SdlNs.SDLRendererPtr _renderer;
+    /// <summary>The renderer texture work targets right now: the main window's, or the
+    /// detached host's during its pass. SDL textures are per-renderer, so every cache that
+    /// uploads textures keys on this.</summary>
+    private SdlNs.SDLRendererPtr _activeRenderer;
 
     private GameData? _gd;
     private string _dataDir = "";
@@ -20,6 +24,7 @@ public sealed unsafe partial class App
     private bool _allEpisodes;                 // level list / tree / reader span every episode
     private int _levelIdx;                     // index into _browse, not into an episode
     private Level? _level;
+    private List<ScrollWalk.Seg>? _flowSegs;   // the level's scroll walk, for flow-line markers
     private ShapeTable? _shapes;
     private EnemyData? _enemyData;
     private LevelTimeline? _timeline;
@@ -39,7 +44,7 @@ public sealed unsafe partial class App
     private string _hoverInfo = "";
 
     // Data-folder picker / PNG Save-As box.
-    private enum PickPurpose { DataDir, SavePng }
+    private enum PickPurpose { DataDir, SavePng, ExportEpisode }
     private bool _showDirInput;
     private readonly byte[] _dirBuf = new byte[1024];
     private volatile bool _pickActive, _pickDone;   // native file dialog runs on its own STA thread
@@ -147,6 +152,7 @@ public sealed unsafe partial class App
         SdlNs.SDLWindowPtr window = default, int cliPlaybackTick = -1, int cliPlayerX = -1, int cliPlayerY = -1)
     {
         _renderer = renderer;
+        _activeRenderer = renderer;
         _settings = settings;
         _window = window;
         if (cliPlaybackTick >= 0) _playbackMode = true;
@@ -176,6 +182,10 @@ public sealed unsafe partial class App
         _clickKillDamage = Math.Clamp(settings.ClickKillDamage, 1, 254);
         _clickKillExplosions = settings.ClickKillExplosions;
         _showTree = settings.ShowTree;
+        _showEditor = settings.ShowEditor;
+        _edEpisodeNum = Math.Clamp(settings.EditorEpisode, 1, 5);
+        _edMode = Math.Clamp(settings.EditorMode, 0, 2);
+        if (settings.EditorListWidth > 100f) _edListW = settings.EditorListWidth;
         _showCubes = settings.ShowCubes;
         _cubeByLevel = settings.CubesByLevel;
         if (settings.CubeListWidth > 100f) _cubeListW = settings.CubeListWidth;
@@ -313,6 +323,10 @@ public sealed unsafe partial class App
         s.ClickKillDamage = _clickKillDamage;
         s.ClickKillExplosions = _clickKillExplosions;
         s.ShowTree = _showTree;
+        s.ShowEditor = _showEditor;
+        s.EditorEpisode = _edEpisodeNum;
+        s.EditorMode = _edMode;
+        s.EditorListWidth = _edListW;
         s.ShowCubes = _showCubes;
         s.CubesByLevel = _cubeByLevel;
         s.CubeListWidth = _cubeListW;
@@ -522,6 +536,7 @@ public sealed unsafe partial class App
             _level = _gd!.LoadLevel(ep, fileNum);
             _shapes = _gd.GetShapeTable(_level.ShapeChar);
             _enemyData = _gd.GetEnemyData(ep);
+            _flowSegs = ScrollWalk.Build(_level.Events);
             _timeline = LevelTimeline.Build(_level);
             _layerScroll = new ObjectPlacer.LayerScroll();
             _objects = ObjectPlacer.Place(_gd, ep, _level, _enemyData, null, _layerScroll);
@@ -633,6 +648,10 @@ public sealed unsafe partial class App
             return;
         }
 
+        // The editor owns its keys the same way: arrows must not walk the main level list
+        // out from under a map being painted, and Ctrl+Z belongs to the canvas.
+        if (_editorFocused) return;
+
         // The search palette walks its own results with the arrows while it holds the focus,
         // so stepping the level here as well would scroll the list out from under it.
         if (!(_showSearch && _searchOwnsKeys))
@@ -678,7 +697,9 @@ public sealed unsafe partial class App
         _hoverPick = null;   // a slot number from the old run means nothing in the new one
         try
         {
-            var sim = new GameSim(_gd, CurEpisode, _level, _shapes)
+            // _enemyData is normally the episode's cached table; during an editor playtest it
+            // is the edited copy, and the sim must fly the same enemies the editor shows.
+            var sim = new GameSim(_gd, CurEpisode, _level, _shapes, _enemyData)
             {
                 Difficulty = _simDifficulty,
                 ScrollMult = _simScrollMult,
@@ -912,6 +933,8 @@ public sealed unsafe partial class App
 
     public void Render()
     {
+        PumpAtlasGraveyard();   // last frame's draw data is presented; its textures may go now
+
         // Apply a completed native file pick (the dialog runs on a background STA thread).
         if (_pickActive && _pickDone)
         {
@@ -923,6 +946,7 @@ public sealed unsafe partial class App
             if (!string.IsNullOrEmpty(picked))
             {
                 if (_pickPurpose == PickPurpose.DataDir) TrySetDataDir(picked);
+                else if (_pickPurpose == PickPurpose.ExportEpisode) EditorExportTo(picked);
                 else WritePendingPng(picked);
             }
             else
@@ -1013,6 +1037,39 @@ public sealed unsafe partial class App
         // reads this next frame, before either window has drawn.
         _audioWindowFocused = _musicFocused || _soundFocused;
         DrawSearchWindow();
+        DrawEditorWindow();
+    }
+
+    /// <summary>
+    /// One frame of one detached OS window: the same reference-window draw calls, with
+    /// <see cref="_uiAuxPass"/>/<see cref="_auxCurrentId"/> telling RefBegin which single
+    /// window fills this host and <see cref="_activeRenderer"/> pointing texture uploads at
+    /// its renderer. Runs under the host's own ImGui context.
+    /// </summary>
+    public void RenderAuxWindow(string id, SdlNs.SDLRendererPtr auxRenderer)
+    {
+        _uiAuxPass = true;
+        _auxCurrentId = id;
+        _activeRenderer = auxRenderer;
+        try
+        {
+            DrawTreeWindow();
+            DrawCubeWindow();
+            DrawSpriteWindow();
+            DrawEnemyWindow();
+            DrawItemWindow();
+            DrawAnalysisWindow();
+            DrawMusicWindow();
+            DrawSoundWindow();
+            DrawSearchWindow();
+            DrawEditorWindow();
+        }
+        finally
+        {
+            _uiAuxPass = false;
+            _auxCurrentId = "";
+            _activeRenderer = _renderer;
+        }
     }
 
     /// <summary>
@@ -1072,7 +1129,13 @@ public sealed unsafe partial class App
                 "that fires them."))
             _showSounds = !_showSounds;
 
-        if (Chip("Search  (Ctrl+F)", _showSearch, AcPlayer, -1f,
+        if (Chip("Editor", _showEditor, AcGo, w,
+                "Make your own content: edit or build levels tile by tile, script\n" +
+                "their events, rewrite the enemy table and the episode script, and\n" +
+                "save game-compatible files the Engaged fork loads as-is."))
+            _showEditor = !_showEditor;
+        ImGui.SameLine(0, 5);
+        if (Chip("Search  (Ctrl+F)", _showSearch, AcPlayer, w,
                 "One box over levels, enemies, items, pickups, outposts, datacubes and sprites."))
             OpenSearch();
     }
@@ -1504,6 +1567,19 @@ public sealed unsafe partial class App
         _pickPurpose = PickPurpose.DataDir;
         if (!OperatingSystem.IsWindows()) { _showDirInput = true; return; }
         StartPickWindows("Select your Tyrian 2000 folder", null);
+    }
+
+    /// <summary>The editor's export target chooser (same dialog, different purpose).</summary>
+    private void StartExportFolderPick()
+    {
+        if (_pickActive) return;
+        _pickPurpose = PickPurpose.ExportEpisode;
+        if (!OperatingSystem.IsWindows())
+        {
+            EditorExportTo(Environment.CurrentDirectory);
+            return;
+        }
+        StartPickWindows("Export the episode into...", null);
     }
 
     /// <summary>Snapshot the composited level and ask where to put it.</summary>
@@ -3389,8 +3465,38 @@ public sealed unsafe partial class App
         ImGui.EndTooltip();
     }
 
+    /// <summary>
+    /// Level-wide events — scroll speeds, map stops, the end, jumps, songs, filters — drawn
+    /// as labelled lines across the map at the moment they fire. Rides the marker toggle:
+    /// the canvas in Markers mode is the "what does this level DO" view, and these are the
+    /// level-wide half of that answer.
+    /// </summary>
+    private void DrawFlowLineMarkers(ImDrawListPtr dl, Vector2 origin)
+    {
+        if (_level == null || _flowSegs == null || _timeline?.IsUnrolled == true) return;
+        var win = ImGui.GetWindowPos();
+        float winBot = win.Y + ImGui.GetWindowSize().Y;
+        float x0 = origin.X, x1 = origin.X + LevelRenderer.CanvasW * _zoom;
+        float lastLabelY = float.MinValue, labelX = 0f;
+
+        foreach (var ev in _level.Events)
+        {
+            string? label = EventCatalog.FlowLabel(ev);
+            if (label == null) continue;
+            float y = origin.Y +
+                (float)(ObjectPlacer.YBase - ScrollWalk.ScrollAt(_flowSegs, ev.Time)) * _zoom;
+            if (y < win.Y - 24 || y > winBot + 24) continue;
+            uint col = ev.Type == 11 ? AcEnemy : AcRoutes;
+            float py = MathF.Floor(y) + 0.5f;
+            dl.AddLine(new Vector2(x0, py), new Vector2(x1, py), Shade(col, 1f, 110));
+            if (Math.Abs(y - lastLabelY) > 3f) { lastLabelY = y; labelX = x0 + 4f; }
+            labelX += BadgeAt(dl, new Vector2(labelX, py - 17f), label, col, 0.7f).X + 4f;
+        }
+    }
+
     private void DrawMarkers(ImDrawListPtr dl, Vector2 origin, Vector2 mouse, bool hovered)
     {
+        DrawFlowLineMarkers(dl, origin);
         float r = Math.Clamp(4f * _zoom, 2.5f, 9f);
         PlacedObject? hover = null;
         int yOff = ObjYOffset();

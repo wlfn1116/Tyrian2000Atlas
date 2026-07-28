@@ -60,6 +60,70 @@ public sealed class EnemyData
         return ed;
     }
 
+    /// <summary>An EnemyData over records built in memory (the editor's edited table).</summary>
+    public static EnemyData FromRecords(EnemyDat[] records)
+    {
+        var ed = new EnemyData();
+        Array.Copy(records, ed.Enemies, Math.Min(records.Length, ed.Enemies.Length));
+        return ed;
+    }
+
+    /// <summary>How many bytes the two on-disk enemy banks span.</summary>
+    public static int TableByteSize =>
+        ((ENEMY_END1 + 1) + (ENEMY_NUM - ENEMY_START2 + 1)) * EnemySize;
+
+    /// <summary>
+    /// Serialize the table into <paramref name="target"/> at <paramref name="offset"/>, in
+    /// the exact field order <see cref="ReadBank"/> reads (the engine's JE_loadItemDat).
+    /// Writing back an unedited table is a byte-for-byte no-op.
+    /// </summary>
+    public static void WriteTable(EnemyDat[] records, byte[] target, int offset)
+    {
+        if (offset < 0 || offset + TableByteSize > target.Length)
+            throw new InvalidOperationException("enemy table does not fit at the given offset");
+        using var ms = new MemoryStream(target, offset, TableByteSize);
+        using var w = new BinaryWriter(ms);
+        WriteBank(w, records, 0, ENEMY_END1);
+        WriteBank(w, records, ENEMY_START2, ENEMY_NUM);
+    }
+
+    private static void WriteBank(BinaryWriter w, EnemyDat[] records, int lo, int hi)
+    {
+        for (int i = lo; i <= hi; i++)
+        {
+            var e = i < records.Length ? records[i] : default;
+            w.Write(e.Ani);
+            w.Write(e.Tur0); w.Write(e.Tur1); w.Write(e.Tur2);
+            w.Write(e.Freq0); w.Write(e.Freq1); w.Write(e.Freq2);
+            w.Write(e.XMove);
+            w.Write(e.YMove);
+            w.Write(e.XAccel);
+            w.Write(e.YAccel);
+            w.Write(e.XCAccel);
+            w.Write(e.YCAccel);
+            w.Write(e.StartX);
+            w.Write(e.StartY);
+            w.Write(e.StartXC);
+            w.Write(e.StartYC);
+            w.Write(e.Armor);
+            w.Write(e.Esize);
+            for (int g = 0; g < 20; g++)
+                w.Write(e.EGraphic != null && g < e.EGraphic.Length ? e.EGraphic[g] : (ushort)0);
+            w.Write(e.ExplosionType);
+            w.Write(e.Animate);
+            w.Write(e.ShapeBank);
+            w.Write(e.XRev);
+            w.Write(e.YRev);
+            w.Write(e.Dgr);
+            w.Write(e.DLevel);
+            w.Write(e.DAni);
+            w.Write(e.ELaunchFreq);
+            w.Write(e.ELaunchType);
+            w.Write(e.Value);
+            w.Write(e.EEnemyDie);
+        }
+    }
+
     /// <summary>Sanity-check the deterministic offset; only fall back to a scan if it looks wrong.</summary>
     public static int ResolveEnemyOffset(byte[] raw, int estimate)
         => LooksLikeEnemyTable(raw, estimate) ? estimate : DetectEnemyOffset(raw, estimate);

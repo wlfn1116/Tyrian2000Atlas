@@ -818,11 +818,15 @@ public sealed class GameSim
 
     public int TickCount => _s.tickCount;
 
-    public GameSim(GameData gd, EpisodeInfo ep, Level lv, ShapeTable shapes)
+    public GameSim(GameData gd, EpisodeInfo ep, Level lv, ShapeTable shapes,
+        EnemyData? enemyData = null)
     {
         _gd = gd;
         _lv = lv;
-        _ed = gd.GetEnemyData(ep);
+        // The override is how the editor playtests an edited enemy table without touching
+        // the cached one every other window reads. Null — every existing caller — is the
+        // episode's own table, unchanged.
+        _ed = enemyData ?? gd.GetEnemyData(ep);
         _wd = gd.GetWeapons(ep);
         _explosionSheet = gd.GetNewshChar('6');
         _tgt = Screen;

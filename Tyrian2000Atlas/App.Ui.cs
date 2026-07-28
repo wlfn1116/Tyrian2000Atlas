@@ -209,15 +209,26 @@ public sealed unsafe partial class App
             // Work = zero: this frame was fitted to no viewport we know of, so opening it re-fits.
             _refGeom[g.Id] = new RefFrame(new Vector2(g.X, g.Y), new Vector2(g.W, g.H),
                 Vector2.Zero, int.MinValue, 0, Fitted: true);
+            if (g.Max) _refMax.Add(g.Id);
+            if (g.Detached) _refDetached.Add(g.Id);
+            if (g.AuxW > 200 && g.AuxH > 150)
+                _refDetRect[g.Id] = (g.AuxX, g.AuxY, g.AuxW, g.AuxH);
         }
     }
 
     private List<WindowGeom> SaveRefWindows() =>
-        _refGeom.Select(kv => new WindowGeom
+        _refGeom.Select(kv =>
         {
-            Id = kv.Key,
-            X = kv.Value.Pos.X, Y = kv.Value.Pos.Y,
-            W = kv.Value.Size.X, H = kv.Value.Size.Y,
+            var det = _refDetRect.TryGetValue(kv.Key, out var r) ? r : (X: 0, Y: 0, W: 0, H: 0);
+            return new WindowGeom
+            {
+                Id = kv.Key,
+                X = kv.Value.Pos.X, Y = kv.Value.Pos.Y,
+                W = kv.Value.Size.X, H = kv.Value.Size.Y,
+                Max = _refMax.Contains(kv.Key),
+                Detached = _refDetached.Contains(kv.Key),
+                AuxX = det.X, AuxY = det.Y, AuxW = det.W, AuxH = det.H,
+            };
         }).ToList();
 
     /// <summary>
@@ -243,12 +254,121 @@ public sealed unsafe partial class App
     /// there, because a size somebody chose beats a size measured for them. A size restored
     /// from settings.json counts as chosen too.
     /// </summary>
+    /// <summary>Windows currently maximized to the whole work area. Their _refGeom entry
+    /// keeps the rect they restore to, so persistence survives a maximized session.</summary>
+    private readonly HashSet<string> _refMax = new();
+    /// <summary>One-shot: windows leaving the maximized state, whose next Begin must put the
+    /// remembered rect back explicitly (the ordinary "opening" logic won't fire for them).</summary>
+    private readonly HashSet<string> _refUnmax = new();
+    /// <summary>Windows living in their own detached OS windows. Each reference window is
+    /// drawn in exactly one host per frame; RefBegin filters by the pass.</summary>
+    private readonly HashSet<string> _refDetached = new();
+    /// <summary>Each detached window's last OS-window frame, for reopening where it was.</summary>
+    private readonly Dictionary<string, (int X, int Y, int W, int H)> _refDetRect = new();
+    /// <summary>True while a detached host's frame is being drawn; the id names which.</summary>
+    private bool _uiAuxPass;
+    private string _auxCurrentId = "";
+
+    /// <summary>The reference windows that want an OS host right now (detached AND shown).</summary>
+    public IReadOnlyList<string> DetachedIds()
+    {
+        if (_gd == null || _refDetached.Count == 0) return Array.Empty<string>();
+        return _refDetached.Where(RefWindowShown).OrderBy(s => s, StringComparer.Ordinal).ToList();
+    }
+
+    /// <summary>Whether a reference window's launcher flag currently shows it.</summary>
+    private bool RefWindowShown(string id) => id switch
+    {
+        "tree" => _showTree,
+        "cubes" => _showCubes,
+        "sprites" => _showSprites,
+        "enemies" => _showEnemies,
+        "items" => _showItems,
+        "analysis" => _showAnalysis,
+        "music" => _showMusic,
+        "sounds" => _showSounds,
+        "search" => _showSearch,
+        "editor" => _showEditor,
+        _ => false,
+    };
+
+    /// <summary>The human title an OS host window carries for a reference-window id.</summary>
+    public static string RefWindowTitle(string id) => id switch
+    {
+        "tree" => "Level tree",
+        "cubes" => "Datacubes",
+        "sprites" => "Sprites",
+        "enemies" => "Enemies",
+        "items" => "Ships & items",
+        "analysis" => "Analysis",
+        "music" => "Music",
+        "sounds" => "Sounds",
+        "search" => "Search",
+        "editor" => "Editor",
+        _ => id,
+    };
+
+    /// <summary>Send a window home — its OS host was closed (or the button toggled).</summary>
+    public void ReattachWindow(string id) => _refDetached.Remove(id);
+
+    /// <summary>The "--detach id" entry point (and the title-bar button's action).</summary>
+    public void DetachWindow(string id) => _refDetached.Add(id);
+
+    /// <summary>Where a window's OS host last sat (MinValue coordinates = centered).</summary>
+    public (int X, int Y, int W, int H) DetachedRect(string id) =>
+        _refDetRect.TryGetValue(id, out var r) ? r : (int.MinValue, int.MinValue, 1040, 780);
+
+    public void RememberDetachedRect(string id, int x, int y, int w, int h)
+    {
+        if (w > 200 && h > 150) _refDetRect[id] = (x, y, w, h);
+    }
+
     private bool RefBegin(string title, string id, ref bool show, uint accent,
         Vector2 size, Vector2 minSize)
     {
+        // A window lives in exactly one host per frame: its own detached OS window, or the
+        // main one. The wrong pass skips it entirely (no style, no Begin).
+        if (!show) return false;
+        if (_uiAuxPass) { if (id != _auxCurrentId) return false; }
+        else if (_refDetached.Contains(id)) return false;
+
         PushRefStyle(accent);
 
         var vp = ImGui.GetMainViewport();
+        bool maxed = !_uiAuxPass && _refMax.Contains(id);
+        // Filling — a detached window IS its OS window, and a maximized one IS the work
+        // area: both drop the rounded shell and the border, which only make sense on a
+        // floating frame.
+        bool fill = _uiAuxPass || maxed;
+        if (fill)
+        {
+            ImGui.PushStyleVar(ImGuiStyleVar.WindowRounding, 0f);
+            ImGui.PushStyleVar(ImGuiStyleVar.WindowBorderSize, 0f);
+        }
+
+        if (_uiAuxPass)
+        {
+            // Content fills the host edge to edge; the OS window's native chrome does the
+            // moving, minimizing, maximizing and closing.
+            ImGui.SetNextWindowPos(vp.WorkPos);
+            ImGui.SetNextWindowSize(vp.WorkSize);
+            ImGui.SetNextWindowCollapsed(false);
+            bool auxVis = ImGui.Begin($"{title}###{id}",
+                ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize |
+                ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoCollapse |
+                ImGuiWindowFlags.NoBringToFrontOnFocus | ImGuiWindowFlags.NoSavedSettings);
+            ImGui.PopStyleVar(2);
+            if (auxVis)
+            {
+                _bandOwner = "";
+                _bandOwnerW = ImGui.GetWindowWidth();
+                return true;
+            }
+            ImGui.End();
+            PopRefStyle(accent);
+            return false;
+        }
+
         var room = new Vector2(Math.Max(240f, vp.WorkSize.X - RefMargin * 2f),
                                Math.Max(160f, vp.WorkSize.Y - RefMargin * 2f));
         minSize = Vector2.Min(minSize, room);
@@ -261,24 +381,45 @@ public sealed unsafe partial class App
         int opened = opening ? frame : was.Opened;
         float need = known && was.Fitted ? 0f : Math.Min(room.X, _bandNeed.GetValueOrDefault(id));
 
-        if (opening || need > 0f)
+        var winFlags = ImGuiWindowFlags.None;
+        if (maxed)
         {
-            var want = Vector2.Clamp(known ? was.Size : size, minSize, room);
-            want.X = Math.Max(want.X, need);
-            // Only on the way in: a window being widened to fit its bands has been left
-            // wherever it was put.
-            if (opening)
-            {
-                var lo = vp.WorkPos + new Vector2(RefMargin, RefMargin);
-                var hi = Vector2.Max(lo, vp.WorkPos + vp.WorkSize - want - new Vector2(RefMargin, RefMargin));
-                ImGui.SetNextWindowPos(Vector2.Clamp(known ? was.Pos : lo + new Vector2(48f, 38f), lo, hi));
-            }
-            ImGui.SetNextWindowSize(want);
+            // Pinned to the work area every frame; the remembered rect stays untouched
+            // underneath so the restore lands exactly where the window was.
+            ImGui.SetNextWindowPos(vp.WorkPos);
+            ImGui.SetNextWindowSize(vp.WorkSize);
+            ImGui.SetNextWindowSizeConstraints(vp.WorkSize, vp.WorkSize);
+            ImGui.SetNextWindowCollapsed(false);
+            winFlags = ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoResize |
+                       ImGuiWindowFlags.NoCollapse;
         }
-        ImGui.SetNextWindowSizeConstraints(minSize, room);
+        else
+        {
+            if (_refUnmax.Remove(id) && known)
+            {
+                ImGui.SetNextWindowPos(was.Pos);
+                ImGui.SetNextWindowSize(was.Size);
+            }
+            else if (opening || need > 0f)
+            {
+                var want = Vector2.Clamp(known ? was.Size : size, minSize, room);
+                want.X = Math.Max(want.X, need);
+                // Only on the way in: a window being widened to fit its bands has been left
+                // wherever it was put.
+                if (opening)
+                {
+                    var lo = vp.WorkPos + new Vector2(RefMargin, RefMargin);
+                    var hi = Vector2.Max(lo, vp.WorkPos + vp.WorkSize - want - new Vector2(RefMargin, RefMargin));
+                    ImGui.SetNextWindowPos(Vector2.Clamp(known ? was.Pos : lo + new Vector2(48f, 38f), lo, hi));
+                }
+                ImGui.SetNextWindowSize(want);
+            }
+            ImGui.SetNextWindowSizeConstraints(minSize, room);
+        }
 
         bool open = show;
-        bool vis = ImGui.Begin($"{title}###{id}", ref open);
+        bool vis = ImGui.Begin($"{title}###{id}", ref open, winFlags);
+        if (fill) ImGui.PopStyleVar(2);
         show = open;
         // Fitted once the bands have had frames enough to be measured and the window is as wide
         // as they asked for -- or as wide as the app window can make it, when they asked for
@@ -286,10 +427,13 @@ public sealed unsafe partial class App
         bool fitted = (known && was.Fitted)
                       || (vis && frame - opened >= 4 && need <= ImGui.GetWindowWidth() + 0.5f);
         // Collapsed, ImGui reports the title bar's height as the window size, which is not a
-        // size to reopen at: keep the last full one instead.
-        _refGeom[id] = new RefFrame(ImGui.GetWindowPos(),
-            vis ? ImGui.GetWindowSize() : known ? was.Size : size,
-            vp.WorkSize, frame, opened, fitted);
+        // size to reopen at: keep the last full one instead -- and a maximized window's rect
+        // is the work area's, not one to remember at all.
+        _refGeom[id] = new RefFrame(
+            maxed ? (known ? was.Pos : vp.WorkPos + new Vector2(48f, 38f)) : ImGui.GetWindowPos(),
+            maxed || !vis ? (known ? was.Size : size) : ImGui.GetWindowSize(),
+            vp.WorkSize, frame, opened, fitted || maxed);
+        DrawTitleButtons(id, accent, maxed, collapsed: !vis);
         if (vis)
         {
             // Collect this frame's band measurements afresh: a band that has since lost a
@@ -302,6 +446,107 @@ public sealed unsafe partial class App
         ImGui.End();
         PopRefStyle(accent);
         return false;
+    }
+
+    /// <summary>
+    /// The window controls every reference window carries in its title bar beside the close
+    /// button: detach to the second OS window, minimize (collapse) and maximize. ImGui owns
+    /// that strip, so they are drawn and hit-tested by hand on the window's own draw list —
+    /// which also means they keep working while the window is collapsed.
+    /// </summary>
+    private void DrawTitleButtons(string id, uint accent, bool maxed, bool collapsed)
+    {
+        float titleH = ImGui.GetFontSize() + ImGui.GetStyle().FramePadding.Y * 2f;
+        var win = ImGui.GetWindowPos();
+        float w = ImGui.GetWindowWidth();
+        var dl = ImGui.GetWindowDrawList();
+        var mouse = ImGui.GetMousePos();
+        bool winHot = ImGui.IsWindowHovered(ImGuiHoveredFlags.AllowWhenBlockedByActiveItem);
+
+        // The draw list is clipped to the content region by now; the title bar needs
+        // letting back in or the glyphs never show.
+        dl.PushClipRect(win, new Vector2(win.X + w, win.Y + titleH + 2f), false);
+
+        // Slot k counts leftwards from the native close button.
+        (Vector2 A, Vector2 B, bool Hot) Slot(int k)
+        {
+            var a = new Vector2(win.X + w - titleH * (k + 1f) - 4f, win.Y + 2f);
+            var b = a + new Vector2(titleH - 4f, titleH - 4f);
+            bool hot = winHot && mouse.X >= a.X && mouse.X < b.X && mouse.Y >= a.Y && mouse.Y < b.Y;
+            if (hot) dl.AddRectFilled(a, b, Shade(accent, 0.45f, 160), 3f);
+            return (a, b, hot);
+        }
+        bool Clicked(bool hot, string tip)
+        {
+            if (!hot) return false;
+            ImGui.SetTooltip(tip);
+            if (!ImGui.IsMouseClicked(ImGuiMouseButton.Left)) return false;
+            // The press would otherwise also start a title-bar drag.
+            ImGuiP.ClearActiveID();
+            return true;
+        }
+        uint Col(bool hot) => hot ? Gfx.Rgba(250, 252, 255) : Alpha(UiText, 190);
+
+        // --- maximize / restore ---
+        var (ma, mb, mHot) = Slot(1);
+        var c = (ma + mb) * 0.5f;
+        if (maxed)
+        {
+            dl.AddRect(c + new Vector2(-1.5f, -3.5f), c + new Vector2(3.5f, 1.5f), Col(mHot), 1f);
+            dl.AddRectFilled(c + new Vector2(-3.6f, -1.6f), c + new Vector2(1.6f, 3.6f),
+                Shade(accent, 0.20f, 235), 1f);
+            dl.AddRect(c + new Vector2(-3.5f, -1.5f), c + new Vector2(1.5f, 3.5f), Col(mHot), 1f);
+        }
+        else
+        {
+            dl.AddRect(c - new Vector2(3.5f, 3.5f), c + new Vector2(3.5f, 3.5f), Col(mHot), 1f);
+            dl.AddLine(c + new Vector2(-3.5f, -2.5f), c + new Vector2(3.5f, -2.5f), Col(mHot), 1f);
+        }
+        if (Clicked(mHot, maxed ? "restore" : "maximize"))
+        {
+            if (maxed) { _refMax.Remove(id); _refUnmax.Add(id); }
+            else _refMax.Add(id);
+        }
+
+        // --- minimize (collapse) / restore ---
+        var (na, nb, nHot) = Slot(2);
+        c = (na + nb) * 0.5f;
+        if (collapsed)
+        {
+            // A small up-chevron: bring the body back.
+            dl.AddLine(c + new Vector2(-3.5f, 2f), c + new Vector2(0f, -2.5f), Col(nHot), 1.4f);
+            dl.AddLine(c + new Vector2(0f, -2.5f), c + new Vector2(3.5f, 2f), Col(nHot), 1.4f);
+        }
+        else
+        {
+            dl.AddLine(c + new Vector2(-3.5f, 3f), c + new Vector2(3.5f, 3f), Col(nHot), 1.4f);
+        }
+        if (Clicked(nHot, collapsed ? "restore" : "minimize"))
+        {
+            if (maxed) { _refMax.Remove(id); _refUnmax.Add(id); }
+            ImGui.SetWindowCollapsed(!collapsed);
+        }
+
+        // --- detach to / return from the second OS window ---
+        var (da, db, dHot) = Slot(3);
+        c = (da + db) * 0.5f;
+        bool detached = _refDetached.Contains(id);
+        // A little window with an arrow leaving (detach) or entering (return).
+        dl.AddRect(c + new Vector2(-3.5f, -1.5f), c + new Vector2(1.5f, 3.5f), Col(dHot), 1f);
+        var tip1 = detached ? c + new Vector2(-2.6f, -2.6f) : c + new Vector2(3.6f, -3.6f);
+        var tail = detached ? c + new Vector2(3.4f, -3.4f) : c + new Vector2(-1.4f, 1.4f);
+        dl.AddLine(tail, tip1, Col(dHot), 1.3f);
+        dl.AddLine(tip1, tip1 + new Vector2(detached ? 3.2f : -3.2f, 0), Col(dHot), 1.1f);
+        dl.AddLine(tip1, tip1 + new Vector2(0, detached ? 3.2f : -3.2f), Col(dHot), 1.1f);
+        if (Clicked(dHot, detached
+                ? "return to the main window"
+                : "detach into a separate OS window\n(drag it to another monitor)"))
+        {
+            if (detached) _refDetached.Remove(id);
+            else _refDetached.Add(id);
+        }
+
+        dl.PopClipRect();
     }
 
     private static void RefEnd(uint accent)

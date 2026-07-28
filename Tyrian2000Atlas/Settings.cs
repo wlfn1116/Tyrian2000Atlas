@@ -22,6 +22,15 @@ public sealed class WindowGeom
     public float Y { get; set; }
     public float W { get; set; }
     public float H { get; set; }
+    /// <summary>Maximized to the work area; X/Y/W/H keep the rect it restores to.</summary>
+    public bool Max { get; set; }
+    /// <summary>Living in its own detached OS window rather than the main one.</summary>
+    public bool Detached { get; set; }
+    /// <summary>That OS window's last frame (AuxW 0 = never detached).</summary>
+    public int AuxX { get; set; }
+    public int AuxY { get; set; }
+    public int AuxW { get; set; }
+    public int AuxH { get; set; }
 }
 
 /// <summary>
@@ -89,6 +98,12 @@ public sealed class AppSettings
     public int LevelOrder { get; set; }
     /// <summary>Bitmask of the EdgeKinds the level tree draws; 0 = never saved.</summary>
     public int TreeEdgeMask { get; set; }
+
+    // --- Editor ---
+    public bool ShowEditor { get; set; }                // the episode/level/enemy editor
+    public int EditorEpisode { get; set; } = 1;         // episode slot last edited (1..5)
+    public int EditorMode { get; set; }                 // 0 levels, 1 script, 2 enemies
+    public float EditorListWidth { get; set; }          // 0 = default
 
     // --- Audio ---
     public bool ShowMusic { get; set; }                 // the music player window

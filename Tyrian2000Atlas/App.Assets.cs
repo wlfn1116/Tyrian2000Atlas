@@ -122,13 +122,45 @@ public sealed unsafe partial class App
     /// <summary>Enough for every bank a window has on screen at once, several times over.</summary>
     private const int AtlasCacheMax = 28;
 
-    private readonly Dictionary<(SpriteSource Src, int Palette), SpriteAtlas> _atlases = new();
-    private readonly List<(SpriteSource Src, int Palette)> _atlasOrder = new();
+    // Keyed by renderer too: SDL textures belong to the renderer that made them, and the
+    // same bank shown in the main window and the detached one needs a texture in each.
+    private readonly Dictionary<(SpriteSource Src, int Palette, nint Renderer), SpriteAtlas> _atlases = new();
+    private readonly List<(SpriteSource Src, int Palette, nint Renderer)> _atlasOrder = new();
+    /// <summary>Atlases evicted mid-frame. Their textures may still sit in this frame's
+    /// draw list, so destruction waits for the next frame's start — destroying at once
+    /// blanked every sprite the frame had already queued from them.</summary>
+    private readonly List<SpriteAtlas> _atlasGraveyard = new();
+
+    /// <summary>Call once per frame, before any drawing, to bury last frame's evictions.</summary>
+    private void PumpAtlasGraveyard()
+    {
+        foreach (var dead in _atlasGraveyard) dead.Dispose();
+        _atlasGraveyard.Clear();
+    }
+
+    /// <summary>
+    /// Release every texture made on one renderer — called by the host right before it
+    /// destroys the detached window's renderer, while destroying them is still legal.
+    /// </summary>
+    public void DropRendererCaches(nint rendererHandle)
+    {
+        PumpAtlasGraveyard();   // both renderers are alive here; bury everything pending
+        foreach (var key in _atlasOrder.Where(k => k.Renderer == rendererHandle).ToList())
+        {
+            _atlasOrder.Remove(key);
+            if (_atlases.Remove(key, out var dead)) dead.Dispose();
+        }
+        if (_cubeFace.RendererHandle == rendererHandle)
+        {
+            _cubeFace.Dispose();
+            _cubeFaceKey = (-1, -1, -1);
+        }
+    }
 
     private SpriteAtlas? Atlas(SpriteSource src, int palette)
     {
         if (_gd == null) return null;
-        var key = (src, palette);
+        var key = (src, palette, (nint)_activeRenderer.Handle);
         if (_atlases.TryGetValue(key, out var hit))
         {
             _atlasOrder.Remove(key);
@@ -142,14 +174,14 @@ public sealed unsafe partial class App
         if (sprites.Length == 0) return null;
 
         var atlas = new SpriteAtlas();
-        try { atlas.Build(_renderer, sprites, _gd.Palettes.Get(palette)); }
+        try { atlas.Build(_activeRenderer, sprites, _gd.Palettes.Get(palette)); }
         catch { atlas.Dispose(); return null; }
 
         while (_atlasOrder.Count >= AtlasCacheMax)
         {
             var oldest = _atlasOrder[0];
             _atlasOrder.RemoveAt(0);
-            if (_atlases.Remove(oldest, out var dead)) dead.Dispose();
+            if (_atlases.Remove(oldest, out var dead)) _atlasGraveyard.Add(dead);
         }
         _atlases[key] = atlas;
         _atlasOrder.Add(key);
