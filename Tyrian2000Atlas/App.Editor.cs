@@ -23,13 +23,31 @@ public sealed unsafe partial class App
     private bool _showEditor;
     private EditableEpisode? _edEp;
     private int _edEpisodeNum = 1;          // episode slot being edited (1..5)
-    private int _edMode;                    // 0 = levels, 1 = script, 2 = enemies
+    private int _edMode;                    // 0 = levels, 1 = script, 2 = enemies, 3 = cubes
     private int _edLevelIdx;                // selected level (index into _edEp.Levels)
     private float _edListW = 268f;
     private readonly byte[] _edLevelFilter = new byte[48];
-    private string _edStatus = "";
+    private string _edStatusText = "";
+    private double _edStatusAt = -1e9;      // ImGui time the status last changed
+
+    /// <summary>The editor's one-line status. Setting it stamps the time, so the map
+    /// canvas can toast fresh messages full-width where the user is actually looking —
+    /// the rail's clipped one-liner buried "WARNING: invisible in game" and every long
+    /// save error behind an ellipsis.</summary>
+    private string _edStatus
+    {
+        get => _edStatusText;
+        set { _edStatusText = value; _edStatusAt = ImGui.GetTime(); }
+    }
     private bool _edConfirmRevert;
     private bool _edConfirmBlank;
+    // The save report: every problem in full, in a surface made for reading. The rail's
+    // one-line status can only ever fit "Not saved: ..." with an ellipsis.
+    private string _edReportTitle = "";
+    private string _edReportSubtitle = "";
+    private List<string> _edReportProblems = new();
+    private List<string> _edReportNotes = new();
+    private bool _edReportRequest;
     private bool _edNewLevelRequest;
     private int _edNewTemplate;
     private int _edNewShape;
@@ -64,6 +82,14 @@ public sealed unsafe partial class App
     private bool _edSnapshotPopup;
     private int _edSnapshotSerial = 1;
 
+    /// <summary>The "--edepisode N" entry point: aim the editor at an episode slot before
+    /// any other editor flag loads it.</summary>
+    public void EditorEpisodeCli(int number)
+    {
+        _edEpisodeNum = Math.Clamp(number, 1, 5);
+        _edEp = null;
+    }
+
     /// <summary>The "--edtool N" entry point: arm a map tool (5+ = spawn tools, with their palette).</summary>
     public void EditorTool(int tool)
     {
@@ -89,6 +115,15 @@ public sealed unsafe partial class App
     /// <summary>The "--maximize id" entry point: open a reference window maximized.</summary>
     public void MaximizeWindow(string id) => _refMax.Add(id);
 
+    /// <summary>The "--edreport" exit line: what a scripted editor interaction did.</summary>
+    public string EditorReport()
+    {
+        var lv = EditorLevel();
+        return $"edreport status=[{_edStatus}] level={_edLevelIdx} " +
+               $"events={(lv == null ? -1 : lv.Events.Count)} " +
+               $"dirty={_edEp?.Dirty ?? false} undo={_emUndo.Count}";
+    }
+
     /// <summary>The "--edplaytest [level]" entry point: press the editor's Playtest button
     /// without opening the window, so the shot shows the playback itself.</summary>
     public void EditorPlaytestCli(int levelIdx = -1)
@@ -97,14 +132,52 @@ public sealed unsafe partial class App
         EditorPlaytest();
     }
 
+    /// <summary>The "--edsave" entry point: press the editor's Save button — validation,
+    /// backups, the write and the reload included — against whatever data folder the run
+    /// found, so the whole save path is scriptable.</summary>
+    public void EditorSaveCli()
+    {
+        EditorEpisode();
+        EditorSave();
+    }
+
     /// <summary>The "--showeditor [mode] [level] [tab]" entry point.</summary>
     public void ShowEditor(int mode = -1, int levelIdx = -1, int tab = -1)
     {
         _showEditor = true;
-        if (mode >= 0) _edMode = Math.Clamp(mode, 0, 2);
+        if (mode >= 0) _edMode = Math.Clamp(mode, 0, 3);
         if (levelIdx >= 0) _edLevelIdx = levelIdx;
         if (tab >= 0) _edSelectTab = Math.Clamp(tab, 0, 2);
         if (tab == 1) _evSelectOnce = 0;
+    }
+
+    /// <summary>The "--edflow [stop] [tab]" entry point: open the Flow builder on a stop.</summary>
+    public void ShowFlowStop(int stop = -1, int tab = -1)
+    {
+        _showEditor = true;
+        _edMode = 1;
+        _esMode = 0;
+        if (stop >= 0) _esStop = stop;
+        if (tab >= 0) _esStopTab = Math.Clamp(tab, 0, 2);
+    }
+
+    /// <summary>The "--edending [tab]" entry point: open the episode-ending editor.</summary>
+    public void ShowEndingEditor(int tab = -1)
+    {
+        _showEditor = true;
+        _edMode = 1;
+        _esMode = 0;
+        _esStop = EsSelEnding;
+        if (tab >= 0) _esEndTab = Math.Clamp(tab, 0, 1);
+    }
+
+    /// <summary>The "--edbattle" entry point: open the Timed Battle arena editor.</summary>
+    public void ShowBattleEditor()
+    {
+        _showEditor = true;
+        _edMode = 1;
+        _esMode = 0;
+        _esStop = EsSelBattle;
     }
 
     /// <summary>The "--ednew" visual-test entry point.</summary>
@@ -206,6 +279,15 @@ public sealed unsafe partial class App
         _evSelected = -1;
         _esSection = 1;
         _esLine = -1;
+        _esFlow = null;
+        _esFlowStale = false;
+        // _esStop survives on purpose: the CLI aims the Flow builder (a stop, the ending,
+        // the arenas) before the first frame constructs the episode; EnsureFlow clamps it.
+        _esStopNameFor = _esWarnBufFor = -1;
+        _esHintFor = _esArenaBufFor = -1;
+        _essCtx = "";
+        _essTextFor = "";
+        _ecBufFor = -1;
     }
 
     /// <summary>Throw the edits away and reload the episode from disk.</summary>
@@ -280,7 +362,8 @@ public sealed unsafe partial class App
         {
             case 0: DrawEditorLevelDetail(ep); break;
             case 1: DrawScriptDetail(ep); break;
-            default: DrawEnemyEditorDetail(ep); break;
+            case 2: DrawEnemyEditorDetail(ep); break;
+            default: DrawCubeEditorDetail(ep); break;
         }
         ImGui.EndChild();
 
@@ -289,6 +372,7 @@ public sealed unsafe partial class App
         DrawNewLevelStudio(ep);
         DrawLevelRenamePopup(ep);
         DrawEditorSnapshotPopup(ep);
+        DrawEditorReportPopup();
         RefEnd(AcEdit);
     }
 
@@ -355,17 +439,19 @@ public sealed unsafe partial class App
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("Which of the five episode slots is being edited.\n" +
                              "The engine knows exactly five; new content replaces one of them.");
-        string files = $"{ep.LvlFileName}  +  {ep.ScriptFileName}" +
-            (ep.SharedEnemyTable ? "  +  tyrian.hdt" : "");
+        string files = $"{ep.LvlFileName} + {ep.ScriptFileName} + {ep.CubeFileName}" +
+            (ep.SharedEnemyTable ? " + tyrian.hdt" : "");
         UiTextClip(files, UiFaint, ImGui.GetContentRegionAvail().X);
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip(files);
         ImGui.Dummy(new Vector2(0, 3f));
 
         SegBar("##edmode", ref _edMode, AcEdit, ImGui.GetContentRegionAvail().X,
             ("Levels", "The tyrian{N}.lvl side: maps, events and per-level settings."),
-            ("Script", "The levels{N}.dat side: level names, order, songs, shops and jumps."),
+            ("Script", "The levels{N}.dat side: the route of stops with story screens,\noutposts, warnings, the ending and the Timed Battle arenas."),
             ("Enemies", ep.SharedEnemyTable
                 ? "The enemyDat table in tyrian.hdt - shared by episodes 1-3."
-                : $"The enemyDat table embedded in tyrian{ep.Number}.lvl."));
+                : $"The enemyDat table embedded in tyrian{ep.Number}.lvl."),
+            ("Cubes", $"cubetxt{ep.Number}.dat: the datacube readings the outposts offer."));
 
         string navTitle;
         string navCount;
@@ -376,13 +462,20 @@ public sealed unsafe partial class App
         }
         else if (_edMode == 1)
         {
-            navTitle = "Script sections";
-            navCount = Math.Max(0, ScriptSections(ep).Count - 1).ToString();
+            navTitle = _esMode == 0 ? "Route" : "Script sections";
+            navCount = _esMode == 0
+                ? EnsureFlow(ep).Stops.Count.ToString()
+                : Math.Max(0, ScriptSections(ep).Count - 1).ToString();
         }
-        else
+        else if (_edMode == 2)
         {
             navTitle = "Enemy table";
             navCount = ep.Enemies.Count(e => e.Loaded).ToString();
+        }
+        else
+        {
+            navTitle = "Datacubes";
+            navCount = ep.Cubes.Count.ToString();
         }
         UiSection(navTitle, AcEdit, navCount);
 
@@ -396,7 +489,8 @@ public sealed unsafe partial class App
         {
             case 0: DrawEditorLevelList(ep); break;
             case 1: DrawScriptSectionList(ep); break;
-            default: DrawEnemyEditorList(ep); break;
+            case 2: DrawEnemyEditorList(ep); break;
+            default: DrawCubeEditorList(ep); break;
         }
         ImGui.EndChild();
 
@@ -410,8 +504,9 @@ public sealed unsafe partial class App
         ImGui.SameLine(0, 5);
         if (UiButton(ep.Dirty ? "Save *" : "Save", AcEdit,
                 $"Write {ep.LvlFileName} + {ep.ScriptFileName}" +
-                (ep.SharedEnemyTable ? " (+ tyrian.hdt if enemies changed)" : "") +
-                $" into the data folder.\nFirst overwrite of a stock file keeps a pristine copy as *{EditableEpisode.BackupSuffix}.\n\nCtrl+S",
+                $" (+ {ep.CubeFileName}" + (ep.SharedEnemyTable ? " / tyrian.hdt" : "") +
+                " if changed) into the data folder.\nFirst overwrite of a stock file keeps a " +
+                $"pristine copy as *{EditableEpisode.BackupSuffix}.\n\nCtrl+S",
                 w2, _gd == null))
             EditorSave();
 
@@ -612,6 +707,20 @@ public sealed unsafe partial class App
     // Saving
     // =====================================================================
 
+    /// <summary>Put a save/export outcome where it can actually be read: the full text of
+    /// every problem, wrapped, in a popup — plus the same first line in the rail status.</summary>
+    private void OpenEditorReport(string title, string subtitle, List<string> problems,
+        List<string>? notes = null)
+    {
+        _edReportTitle = title;
+        _edReportSubtitle = subtitle;
+        _edReportProblems = problems;
+        _edReportNotes = notes ?? new List<string>();
+        _edReportRequest = true;
+        _edStatus = $"{title}: " + (problems.Count > 0 ? problems[0] : "") +
+            (problems.Count > 1 ? $" (+{problems.Count - 1} more)" : "");
+    }
+
     private void EditorSave()
     {
         var ep = _edEp;
@@ -619,14 +728,24 @@ public sealed unsafe partial class App
         var problems = ep.Validate();
         if (problems.Count > 0)
         {
-            _edStatus = "Not saved: " + problems[0] +
-                (problems.Count > 1 ? $" (+{problems.Count - 1} more)" : "");
+            OpenEditorReport("Not saved", "nothing was written to the data folder",
+                problems, ep.Advisories());
             return;
         }
+        List<string> written;
         try
         {
-            var written = ep.SaveTo(_dataDir, backup: true);
-            _edStatus = "Saved " + string.Join(", ", written) + " - reloading.";
+            written = ep.SaveTo(_dataDir, backup: true);
+        }
+        catch (Exception ex)
+        {
+            OpenEditorReport("Save failed", "the save stopped on this error",
+                new List<string> { ex.Message });
+            return;
+        }
+        _edStatus = "Saved " + string.Join(", ", written) + " - reloading.";
+        try
+        {
             // Reload the data set so the level list, browsers and playback all read the
             // saved state; then come back to the same editor selection.
             int keepLevel = _edLevelIdx;
@@ -637,7 +756,11 @@ public sealed unsafe partial class App
         }
         catch (Exception ex)
         {
-            _edStatus = "Save failed: " + ex.Message;
+            // The files ARE on disk; only the atlas's own reload broke. Saying "save
+            // failed" here would send someone hunting the wrong problem.
+            OpenEditorReport("Saved, but reloading the data folder failed",
+                "the files were written; the atlas could not re-read them",
+                new List<string> { ex.Message });
         }
     }
 
@@ -648,8 +771,8 @@ public sealed unsafe partial class App
         var problems = ep.Validate();
         if (problems.Count > 0)
         {
-            _edStatus = "Not exported: " + problems[0] +
-                (problems.Count > 1 ? $" (+{problems.Count - 1} more)" : "");
+            OpenEditorReport("Not exported", "no folder was asked for and nothing was written",
+                problems, ep.Advisories());
             return;
         }
         StartExportFolderPick();
@@ -670,8 +793,49 @@ public sealed unsafe partial class App
         }
         catch (Exception ex)
         {
-            _edStatus = "Export failed: " + ex.Message;
+            OpenEditorReport("Export failed", "the export stopped on this error",
+                new List<string> { ex.Message });
         }
+    }
+
+    /// <summary>The save/export report popup: every problem in full, wrapped, plus the
+    /// advisories that never block a save (dead script entries, levels that cannot end).</summary>
+    private void DrawEditorReportPopup()
+    {
+        if (_edReportRequest) { ImGui.OpenPopup("Save report"); _edReportRequest = false; }
+        var vp = ImGui.GetMainViewport();
+        ImGui.SetNextWindowPos(vp.WorkPos + vp.WorkSize * 0.5f, ImGuiCond.Appearing, new Vector2(0.5f, 0.5f));
+        ImGui.SetNextWindowSize(new Vector2(560f, 0f), ImGuiCond.Appearing);
+        if (!ImGui.BeginPopupModal("Save report", ImGuiWindowFlags.AlwaysAutoResize)) return;
+
+        bool failed = _edReportProblems.Count > 0;
+        UiTitle(_edReportTitle, failed ? AcEnemy : AcEdit, _edReportSubtitle, maxW: 530f);
+        ImGui.Dummy(new Vector2(0, 2f));
+        ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + 530f);
+        foreach (var p in _edReportProblems)
+        {
+            ImGui.TextColored(ColorOf(Shade(AcEnemy, 1.1f)), "x");
+            ImGui.SameLine(0, 7f);
+            ImGui.TextWrapped(p);
+        }
+        if (_edReportNotes.Count > 0)
+        {
+            ImGui.Dummy(new Vector2(0, 4f));
+            UiSection("Worth knowing (never blocks saving)", AcEdit);
+            foreach (var n in _edReportNotes)
+            {
+                ImGui.TextDisabled("-");
+                ImGui.SameLine(0, 7f);
+                ImGui.PushStyleColor(ImGuiCol.Text, ColorOf(UiDim));
+                ImGui.TextWrapped(n);
+                ImGui.PopStyleColor();
+            }
+        }
+        ImGui.PopTextWrapPos();
+        ImGui.Dummy(new Vector2(0, 6f));
+        if (UiButton("Close", AcEdit, "", 120f) || ImGui.IsKeyPressed(ImGuiKey.Escape))
+            ImGui.CloseCurrentPopup();
+        ImGui.EndPopup();
     }
 
     // =====================================================================
@@ -1137,6 +1301,9 @@ public sealed unsafe partial class App
             ep.ScriptDirty = true;
         }
     }
+
+    /// <summary>Renumbering rewrote ]L lines outside the Flow builder's hands.</summary>
+    private void NoteScriptPatched() => NoteScriptChangedExternally();
 
     private static void RenumberScriptLevels(EditableEpisode ep, int removedAt) =>
         PatchScriptLevelNumbers(ep, f => f > removedAt ? f - 1 : f);

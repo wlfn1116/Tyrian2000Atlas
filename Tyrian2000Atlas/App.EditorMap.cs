@@ -76,6 +76,8 @@ public sealed unsafe partial class App
 
     // The spawn brush and the marker selection.
     private int _emSpawnEnemy = 25;
+    private EditableLevel? _emBrushCheckedLv;  // level the default brush was validated for
+    private bool _emBrushPicked;               // the user chose the brush enemy by hand
     private int _emSpawnBand;             // 0 auto, 1 sky, 2 ground, 3 top, 4 ground2
     private bool _emSpawnBottom;          // enter from the bottom edge instead of the top
     private bool _emBankOnly = true;      // palette lists only banks the level loads
@@ -628,6 +630,7 @@ public sealed unsafe partial class App
         DrawTimeRuler(dl, lv, origin, z, viewTop, viewH);
         DrawFlowLines(lv, dl, origin, z);
         DrawCueLines(lv, dl, origin, z);
+        if (_emTool == EmSpawnPlace) DrawStartZone(dl, origin, z);
         if (_emShowSpawns || SpawnMode) DrawSpawnMarkers(ep, lv, dl, origin, z);
 
         HandleMapMouse(ep, lv, origin, z, size);
@@ -646,9 +649,66 @@ public sealed unsafe partial class App
                 ? "click / box select · drag move · ctrl+D duplicate · Delete · arrows nudge · P play here"
                 : "space+drag pan · shift+wheel sideways · ctrl+wheel zoom · right-drag stamp · K cue · P play here · ctrl+Z/Y history",
             AcEdit);
+        DrawStatusToast(winPos, size);
 
         ImGui.EndChild();
         ImGui.PopStyleColor();
+    }
+
+    /// <summary>
+    /// The band of map already on screen the moment play begins, for the armed brush's
+    /// entry edge. Spawns cannot exist there earlier than the first tick, so clicks in it
+    /// place at t 1 — and since the canvas OPENS on this band (the level start), it has to
+    /// be visible space, not a silent refusal zone.
+    /// </summary>
+    private void DrawStartZone(ImDrawListPtr dl, Vector2 origin, float z)
+    {
+        int baseEy = _emWaveArmed >= 0 ? -28 : SpawnBaseEy();
+        float yLine = origin.Y + (ObjectPlacer.YBase + baseEy) * z;
+        float yBot = origin.Y + LevelRenderer.CanvasH * z;
+        if (yBot <= yLine) return;
+        var win = ImGui.GetWindowPos();
+        float winBot = win.Y + ImGui.GetWindowSize().Y;
+        if (yLine > winBot + 8f || yBot < win.Y - 8f) return;
+
+        float x0 = origin.X, x1 = origin.X + LevelRenderer.CanvasW * z;
+        dl.AddRectFilled(new Vector2(x0, yLine), new Vector2(x1, yBot), Shade(AcEdit, 0.7f, 13));
+        float py = Px(yLine);
+        dl.AddLine(new Vector2(x0, py), new Vector2(x1, py), Shade(AcEdit, 0.95f, 110));
+        if (yLine > win.Y + 2f)
+        {
+            // Above the line: the space below belongs to the band and the flow badges of
+            // the level's opening events, which land within a screen-height of it.
+            const string label = "on screen at level start - clicks here place at t 1";
+            dl.AddText(new Vector2(x1 - ImGui.CalcTextSize(label).X - 8f,
+                py - ImGui.GetTextLineHeight() - 4f), Shade(AcEdit, 1.05f, 150), label);
+        }
+    }
+
+    /// <summary>
+    /// The freshest status message, complete and wrapped, floated over the canvas for a
+    /// few seconds: what a click just did (or why it did something unexpected) belongs
+    /// under the user's eyes, not ellipsized in the rail's far corner.
+    /// </summary>
+    private void DrawStatusToast(Vector2 winPos, Vector2 size)
+    {
+        double age = ImGui.GetTime() - _edStatusAt;
+        if (_edStatus.Length == 0 || age > 6.0) return;
+        float a = age > 5.0 ? (float)(6.0 - age) : 1f;
+        float maxW = Math.Min(size.X - 70f, 640f);
+        if (maxW < 120f) return;
+        var sz = ImGui.CalcTextSize(_edStatus, false, maxW);
+        var pad = new Vector2(9f, 6f);
+        var at = new Vector2(winPos.X + (size.X - sz.X) * 0.5f - pad.X,
+                             winPos.Y + size.Y - 34f - sz.Y - pad.Y * 2f);
+        bool warn = _edStatus.Contains("WARNING") || _edStatus.Contains("failed") ||
+                    _edStatus.StartsWith("Not saved") || _edStatus.StartsWith("Not exported");
+        var dl = ImGui.GetForegroundDrawList();
+        dl.AddRectFilled(at, at + sz + pad * 2f, Gfx.Rgba(14, 16, 21, (byte)(232 * a)), 6f);
+        dl.AddRect(at, at + sz + pad * 2f,
+            Shade(warn ? AcSim : AcEdit, 0.85f, (byte)(150 * a)), 6f);
+        dl.AddText(ImGui.GetFont(), ImGui.GetFontSize(), at + pad,
+            Gfx.Rgba(232, 238, 246, (byte)(255 * a)), _edStatus, maxW);
     }
 
     /// <summary>
@@ -1625,6 +1685,7 @@ public sealed unsafe partial class App
         Vector2 mouse, ImDrawListPtr dl)
     {
         EnsureEditorObjects(ep, lv);
+        EnsureBrushSpawnable(ep, lv);
         var io = ImGui.GetIO();
 
         if (_emTool is EmSpawnErase or EmSpawnPick)
@@ -1816,7 +1877,7 @@ public sealed unsafe partial class App
             dl.AddLine(pc - new Vector2(10, 0), pc + new Vector2(10, 0), Shade(AcEdit, 1f, 200));
             dl.AddLine(pc - new Vector2(0, 10), pc + new Vector2(0, 10), Shade(AcEdit, 1f, 200));
             int wt = SpawnTimeForY(lv, mouse.Y, -28);
-            ImGui.SetTooltip($"stamp {wave.Name} ({wave.Events.Count} spawns)  ·  t {(wt < 0 ? "?" : wt)}\n" +
+            ImGui.SetTooltip($"stamp {wave.Name} ({wave.Events.Count} spawns)  ·  t {wt}\n" +
                              "right-click the Waves tab entry to disarm");
             return;
         }
@@ -1835,7 +1896,7 @@ public sealed unsafe partial class App
                     DrawEnemyFrame(dl, atlas, d.EGraphic[0], d.Esize == 1, at,
                         z, Gfx.Rgba(255, 255, 255, 150));
             }
-            if (_emPaths && d.Loaded && t >= 0)
+            if (_emPaths && d.Loaded)
             {
                 var synth = new EventRec { Type = SpawnEventType(SpawnBandCode(table)) };
                 DrawFlightPath(dl, ImGui.GetMousePos(), z,
@@ -1849,7 +1910,8 @@ public sealed unsafe partial class App
             dl.AddLine(p - new Vector2(0, 10), p + new Vector2(0, 10), Shade(AcEdit, 1f, 200));
             bool bankLoaded = SpawnBankLoaded(lv, table);
             ImGui.SetTooltip($"place enemy {_emSpawnEnemy}" +
-                (_emFormation > 0 ? $" x{_emFormCount}" : "") + $"  ·  t {(t < 0 ? "?" : t)}\n" +
+                (_emFormation > 0 ? $" x{_emFormCount}" : "") + $"  ·  t {t}" +
+                (t <= 1 ? " - the level's first moment" : "") + "\n" +
                 $"{SpawnBandName()}{(_emSpawnBottom ? " · from bottom" : "")}" +
                 (bankLoaded ? "" : "\nWARNING: bank not in the level's event-5 loads - invisible in game"));
         }
@@ -1894,6 +1956,7 @@ public sealed unsafe partial class App
         }
 
         _emSpawnEnemy = Math.Clamp((int)ev.Dat, 0, ep.Enemies.Length - 1);
+        _emBrushPicked = true;
         if (ObjectPlacer.IsSpawn(ev.Type, out int band, out int baseEy))
         {
             _emSpawnBand = band switch { 0 => 1, 25 => 2, 50 => 3, 75 => 4, _ => 0 };
@@ -2012,6 +2075,33 @@ public sealed unsafe partial class App
     }
 
     /// <summary>
+    /// Keep the DEFAULT brush enemy drawable on this level: until the user picks an enemy
+    /// by hand, a level whose event-5 loads exclude the brush's bank snaps the brush to
+    /// the first enemy of a bank the level does load. A first-ever click that places
+    /// something the real game cannot draw reads as "placing does not work".
+    /// </summary>
+    private void EnsureBrushSpawnable(EditableEpisode ep, EditableLevel lv)
+    {
+        if (_emBrushPicked || _emBrushCheckedLv == lv) return;
+        _emBrushCheckedLv = lv;
+        var table = ep.Enemies;
+        if (SpawnBankLoaded(lv, table) &&
+            _emSpawnEnemy >= 0 && _emSpawnEnemy < table.Length && table[_emSpawnEnemy].Loaded)
+            return;
+        var banks = LevelBanks(lv);
+        for (int id = 0; id < table.Length; id++)
+        {
+            var d = table[id];
+            if (!d.Loaded || d.EGraphic == null || d.EGraphic[0] is 0 or 999) continue;
+            if (d.ShapeBank is 21 or 26 || banks.Contains(d.ShapeBank))
+            {
+                _emSpawnEnemy = id;
+                return;
+            }
+        }
+    }
+
+    /// <summary>
     /// The live level checklist: the mistakes that survive to the real game silently. Cached
     /// until the events or the enemy table change.
     /// </summary>
@@ -2100,12 +2190,18 @@ public sealed unsafe partial class App
         ? (_emSpawnBand == 3 ? 180 : 190)
         : -28;
 
-    /// <summary>Event time at which a spawn with this base offset lands on canvas Y.</summary>
+    /// <summary>
+    /// Event time at which a spawn with this base offset lands on canvas Y, floored at t 1.
+    /// Canvas Ys below the earliest entry line describe map already on screen when play
+    /// begins; the engine cannot spawn earlier than the first tick, so clicks there place
+    /// at t 1 instead of being refused — a refusal that read as "placing is broken",
+    /// because the initial view opens exactly on that band.
+    /// </summary>
     private int SpawnTimeForY(EditableLevel lv, float canvasY, int baseEy)
     {
         double scroll = ObjectPlacer.YBase + baseEy - canvasY;
-        if (scroll < 0) return -1;
-        return TimeForScroll(lv, scroll);
+        if (scroll < 0) return 1;
+        return Math.Max(1, TimeForScroll(lv, scroll));
     }
 
     /// <summary>The event X (dat2) that puts a spawn of this band at canvas X.</summary>
@@ -2131,11 +2227,6 @@ public sealed unsafe partial class App
             return;
         }
         int t0 = SpawnTimeForY(lv, canvasMouse.Y, SpawnBaseEy());
-        if (t0 < 0)
-        {
-            _edStatus = "that spot is above what the level ever scrolls in";
-            return;
-        }
         float baseX = _emSnap ? MathF.Round(canvasMouse.X / 6f) * 6f : canvasMouse.X;
         PushEventsUndo(lv, offsets.Count > 1
             ? $"place {EmFormationNames[_emFormation]} pattern" : "place spawn");
@@ -2160,6 +2251,7 @@ public sealed unsafe partial class App
         NoteEventsChanged(ep);
         string what = offsets.Count > 1 ? $"{offsets.Count} x enemy {_emSpawnEnemy}" : $"enemy {_emSpawnEnemy}";
         _edStatus = $"placed {what} at t {t0}" +
+            (t0 <= 1 ? " (the level's first moment - that spot is on screen as play begins)" : "") +
             (SpawnBankLoaded(lv, table) ? "" : "  -  WARNING: bank not loaded by event 5, invisible in game");
     }
 
@@ -2293,11 +2385,6 @@ public sealed unsafe partial class App
             return;
         }
         int t0 = SpawnTimeForY(lv, canvasMouse.Y, -28);
-        if (t0 < 0)
-        {
-            _edStatus = "that spot is above what the level ever scrolls in";
-            return;
-        }
         float snapX = _emSnap ? MathF.Round(canvasMouse.X / 6f) * 6f : canvasMouse.X;
         int dx = (int)MathF.Round(snapX - wave.AnchorX);
         PushEventsUndo(lv, $"place {wave.Name}");
@@ -2598,6 +2685,7 @@ public sealed unsafe partial class App
 
     private void DrawSpawnPalette(EditableEpisode ep, EditableLevel lv)
     {
+        EnsureBrushSpawnable(ep, lv);
         UiSection("Spawn brush", AcEdit);
         SegBar("##emband2", ref _emSpawnBand, AcEdit, ImGui.GetContentRegionAvail().X - 4f,
             ("Auto", "Ground band for ground entries (explosion bit), sky for the rest."),
@@ -2663,6 +2751,7 @@ public sealed unsafe partial class App
                     if (ImGui.IsMouseClicked(ImGuiMouseButton.Left))
                     {
                         _emSpawnEnemy = id;
+                        _emBrushPicked = true;
                         _emTool = EmSpawnPlace;
                         _emLastSpawnTool = EmSpawnPlace;
                         _emWaveArmed = -1;
@@ -2692,6 +2781,7 @@ public sealed unsafe partial class App
             if (EnemyListRow(table, id, id == _emSpawnEnemy))
             {
                 _emSpawnEnemy = id;
+                _emBrushPicked = true;
                 _emTool = EmSpawnPlace;
                 _emLastSpawnTool = EmSpawnPlace;
                 _emWaveArmed = -1;   // picking an enemy loads the plain brush again

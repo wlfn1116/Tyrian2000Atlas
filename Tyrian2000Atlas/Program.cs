@@ -220,25 +220,49 @@ internal static unsafe class Program
         int qArg = Array.IndexOf(args, "--search");
         if (qArg >= 0 && qArg + 1 < args.Length) app.ShowSearch(args[qArg + 1]);
 
+        // "--edepisode N": aim the editor at episode slot N (1-5) before anything loads it.
+        int eepArg = Array.IndexOf(args, "--edepisode");
+        if (eepArg >= 0 && eepArg + 1 < args.Length && int.TryParse(args[eepArg + 1], out int eep))
+            app.EditorEpisodeCli(eep);
         // "--showeditor [mode] [levelIdx]" opens the episode editor (0 levels, 1 script,
-        // 2 enemies), optionally on one level (0-based index into the episode's file).
+        // 2 enemies, 3 cubes), optionally on one level (0-based index into the episode's file).
         int edArg = Array.IndexOf(args, "--showeditor");
         if (edArg >= 0)
             app.ShowEditor(
                 edArg + 1 < args.Length && int.TryParse(args[edArg + 1], out int em) ? em : -1,
                 edArg + 2 < args.Length && int.TryParse(args[edArg + 2], out int el) ? el : -1,
                 edArg + 3 < args.Length && int.TryParse(args[edArg + 3], out int et) ? et : -1);
-            if (Array.IndexOf(args, "--ednew") >= 0) app.ShowNewLevelStudio();
-            if (Array.IndexOf(args, "--edrename") >= 0) app.ShowLevelRename();
-            if (Array.IndexOf(args, "--edsnapshots") >= 0) app.ShowSnapshotShelf();
-            if (Array.IndexOf(args, "--edselect") >= 0) app.SelectFirstEditorSpawn();
-            if (Array.IndexOf(args, "--edrepeat") >= 0) app.RepeatFirstEditorSpawn();
+        if (Array.IndexOf(args, "--ednew") >= 0) app.ShowNewLevelStudio();
+        if (Array.IndexOf(args, "--edrename") >= 0) app.ShowLevelRename();
+        if (Array.IndexOf(args, "--edsnapshots") >= 0) app.ShowSnapshotShelf();
+        if (Array.IndexOf(args, "--edselect") >= 0) app.SelectFirstEditorSpawn();
+        if (Array.IndexOf(args, "--edrepeat") >= 0) app.RepeatFirstEditorSpawn();
+        // "--edflow [stop] [tab]" opens the Flow builder (tab 0 story, 1 outpost, 2 warning);
+        // "--edending [tab]" the episode-ending editor (0 endscreens, 1 hints);
+        // "--edbattle" the Timed Battle arenas; "--edcubes [idx]" the datacube workspace.
+        int efArg = Array.IndexOf(args, "--edflow");
+        if (efArg >= 0)
+            app.ShowFlowStop(
+                efArg + 1 < args.Length && int.TryParse(args[efArg + 1], out int efs) ? efs : -1,
+                efArg + 2 < args.Length && int.TryParse(args[efArg + 2], out int eft) ? eft : -1);
+        int eeArg = Array.IndexOf(args, "--edending");
+        if (eeArg >= 0)
+            app.ShowEndingEditor(
+                eeArg + 1 < args.Length && int.TryParse(args[eeArg + 1], out int eet) ? eet : -1);
+        if (Array.IndexOf(args, "--edbattle") >= 0) app.ShowBattleEditor();
+        int ecArg = Array.IndexOf(args, "--edcubes");
+        if (ecArg >= 0)
+            app.ShowCubeEditor(
+                ecArg + 1 < args.Length && int.TryParse(args[ecArg + 1], out int eci) ? eci : -1);
         // "--edplaytest [levelIdx]": press the editor's Playtest button on startup, so the
         // in-memory-level -> playback path is screenshotable.
         int eptArg = Array.IndexOf(args, "--edplaytest");
         if (eptArg >= 0)
             app.EditorPlaytestCli(
                 eptArg + 1 < args.Length && int.TryParse(args[eptArg + 1], out int epl) ? epl : -1);
+        // "--edsave": press the editor's Save button on startup — the validation gate, the
+        // backups, the write and the reload all run against the found data folder.
+        if (Array.IndexOf(args, "--edsave") >= 0) app.EditorSaveCli();
         // "--edtool N": arm a map-editor tool (5+ = spawn tools); "--maximize <id>": open a
         // reference window maximized (editor, enemies, music, ...).
         int etoolArg = Array.IndexOf(args, "--edtool");
@@ -262,12 +286,24 @@ internal static unsafe class Program
             ? new System.Numerics.Vector2(
                 float.Parse(args[mi + 1], inv), float.Parse(args[mi + 2], inv))
             : null;
-        // "--mousedown left|middle|right": hold that button from frame 3 on, so --uishot can
-        // capture drag-only state (the right-drag player aim). Late enough that the widget
-        // under --mouse is already hovered when ImGui sees the press, or the click is lost.
+        // "--mousedown left|middle|right [downFrame [upFrame]]": hold that button from
+        // downFrame (default 3) on, releasing at upFrame (default: never), so --uishot can
+        // capture drag-only state (the right-drag player aim) and a full click — press AND
+        // release — can be scripted (spawn placement fires on release). Late enough that the
+        // widget under --mouse is already hovered when ImGui sees the press, or the click is
+        // lost.
         int mdi = Array.IndexOf(args, "--mousedown");
         int fakeButton = mdi >= 0 && mdi + 1 < args.Length
             ? args[mdi + 1] switch { "left" => 0, "right" => 1, "middle" => 2, _ => -1 } : -1;
+        int fakeDownFrame = mdi >= 0 && mdi + 2 < args.Length && int.TryParse(args[mdi + 2], out int fdf) ? fdf : 3;
+        int fakeUpFrame = mdi >= 0 && mdi + 3 < args.Length && int.TryParse(args[mdi + 3], out int fuf) ? fuf : int.MaxValue;
+        // "--shotframe N": delay the --uishot capture to frame N (default 5), so scripted
+        // input sequences have finished before the frame is read back.
+        int sfi = Array.IndexOf(args, "--shotframe");
+        int shotFrame = sfi >= 0 && sfi + 1 < args.Length && int.TryParse(args[sfi + 1], out int sfv) ? sfv : 5;
+        // "--edreport": print the editor's status line and level state on exit, so a
+        // scripted interaction's outcome is machine-checkable rather than pixel-read.
+        bool edReport = Array.IndexOf(args, "--edreport") >= 0;
 
         // ---- detached hosts: every reference window sent out of the main window gets its
         // OWN OS window (drag it to any monitor; the native title bar moves, minimizes,
@@ -374,7 +410,8 @@ internal static unsafe class Program
             // hover-only UI (markers tooltip, hover readout) without a real mouse.
             // queued last, so it wins over the backend's own position event
             if (fakeMouse.HasValue) io.AddMousePosEvent(fakeMouse.Value.X, fakeMouse.Value.Y);
-            if (fakeButton >= 0 && frame >= 3) io.AddMouseButtonEvent(fakeButton, true);
+            if (fakeButton >= 0 && frame >= fakeDownFrame)
+                io.AddMouseButtonEvent(fakeButton, frame < fakeUpFrame);
             ImGui.NewFrame();
 
             try
@@ -400,7 +437,7 @@ internal static unsafe class Program
             // it does catches the note view without its tails. Capped so a stuck measurement
             // cannot hold the run open.
             frame++;
-            if (uishot >= 0 && !shotMainDone && frame >= 5
+            if (uishot >= 0 && !shotMainDone && frame >= shotFrame
                 && (T2A.Tyrian.Audio.MusicTrack.RingOutsPending == 0 || frame > 400))
             {
                 int w, h; SdlNs.SDL.GetWindowSize(window, &w, &h);
@@ -479,6 +516,7 @@ internal static unsafe class Program
             settings.Save();
         }
 
+        if (edReport) Console.WriteLine(app.EditorReport());
         foreach (var h in hosts.Values.ToList()) DestroyHost(h);
         app.Dispose();
         EnterMainCtx();
@@ -1348,6 +1386,78 @@ internal static unsafe class Program
     /// anything the editor writes. 2) A synthetic episode with an added level must reload
     /// through the ordinary parser with everything intact.
     /// </summary>
+    /// <summary>Deep equality over everything the Flow model holds, for round-trip proofs.</summary>
+    static bool FlowsEqual(T2A.Tyrian.EpisodeFlow a, T2A.Tyrian.EpisodeFlow b, out string why)
+    {
+        static bool ScreensEqual(List<T2A.Tyrian.StoryScreen> x, List<T2A.Tyrian.StoryScreen> y,
+            string where, out string reason)
+        {
+            reason = "";
+            if (x.Count != y.Count) { reason = $"{where}: {x.Count} vs {y.Count} screens"; return false; }
+            for (int i = 0; i < x.Count; i++)
+            {
+                var p = x[i];
+                var q = y[i];
+                if (p.Fade != q.Fade || p.Music != q.Music || p.Picture != q.Picture ||
+                    p.Wipe != q.Wipe || p.WarningFrame != q.WarningFrame ||
+                    p.Red != q.Red || p.Speed != q.Speed || !p.Lines.SequenceEqual(q.Lines))
+                {
+                    reason = $"{where} screen {i + 1}: fade {p.Fade}/{q.Fade} music {p.Music}/{q.Music} " +
+                        $"pic {p.Picture}/{q.Picture} wipe {p.Wipe}/{q.Wipe} warn {p.WarningFrame}/{q.WarningFrame} " +
+                        $"red {p.Red}/{q.Red} speed {p.Speed}/{q.Speed} lines {p.Lines.Count}/{q.Lines.Count}";
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        why = "";
+        if (a.Stops.Count != b.Stops.Count) { why = $"stops {a.Stops.Count} vs {b.Stops.Count}"; return false; }
+        for (int i = 0; i < a.Stops.Count; i++)
+        {
+            var x = a.Stops[i];
+            var y = b.Stops[i];
+            bool same = x.LevelFile == y.LevelFile && x.Name == y.Name && x.Song == y.Song &&
+                x.Bonus == y.Bonus && x.NormalBonus == y.NormalBonus &&
+                x.Galaga == y.Galaga && x.Engage == y.Engage && x.Extra == y.Extra &&
+                x.SavePoint == y.SavePoint && x.SaveBackup == y.SaveBackup &&
+                x.Outpost == y.Outpost &&
+                x.Warning.SequenceEqual(y.Warning) && x.WarnFrame == y.WarnFrame &&
+                x.WarnRed == y.WarnRed && x.WarnSpeed == y.WarnSpeed &&
+                x.Cubes.SequenceEqual(y.Cubes);
+            if (same && x.Outpost)
+                same = x.OutpostSong == y.OutpostSong && x.MapPlanet == y.MapPlanet &&
+                    x.CubesFree == y.CubesFree;
+            for (int r = 0; same && r < T2A.Tyrian.EpisodeFlow.ShopRowCount; r++)
+                same = x.Shop[r].SequenceEqual(y.Shop[r]);
+            if (!same) { why = $"stop {i + 1} fields"; return false; }
+            if (!ScreensEqual(x.Story, y.Story, $"stop {i + 1} story", out why)) return false;
+        }
+        if (a.Ending.Anim != b.Ending.Anim || a.Ending.AnimMusic != b.Ending.AnimMusic ||
+            a.Ending.HintMusic != b.Ending.HintMusic || a.Ending.HintPic != b.Ending.HintPic)
+        {
+            why = $"ending header (anim {a.Ending.Anim}/{b.Ending.Anim} m{a.Ending.AnimMusic}/{b.Ending.AnimMusic} " +
+                $"hm{a.Ending.HintMusic}/{b.Ending.HintMusic} hp{a.Ending.HintPic}/{b.Ending.HintPic})";
+            return false;
+        }
+        if (!ScreensEqual(a.Ending.Screens, b.Ending.Screens, "ending", out why)) return false;
+        for (int h = 0; h < T2A.Tyrian.EpisodeEnding.HintCount; h++)
+            if (!a.Ending.Hints[h].SequenceEqual(b.Ending.Hints[h]))
+            {
+                why = $"hint block {h + 1}";
+                return false;
+            }
+        if (a.Arenas.Count != b.Arenas.Count) { why = $"arenas {a.Arenas.Count} vs {b.Arenas.Count}"; return false; }
+        for (int i = 0; i < a.Arenas.Count; i++)
+            if (a.Arenas[i].LevelFile != b.Arenas[i].LevelFile ||
+                a.Arenas[i].Name != b.Arenas[i].Name || a.Arenas[i].Song != b.Arenas[i].Song)
+            {
+                why = $"arena {i + 1}";
+                return false;
+            }
+        return true;
+    }
+
     static int CheckEditor()
     {
         string? dir = T2A.Tyrian.GameData.FindDataDir();
@@ -1503,6 +1613,224 @@ internal static unsafe class Program
             Console.WriteLine(ok
                 ? $"synthetic level: playtest OK ({ticks} ticks, peak {peak} enemies, ended naturally)"
                 : $"synthetic level: playtest FAILED (ticks {ticks}, peak {peak}, finished {sim.Finished})");
+            failed |= !ok;
+        }
+
+        // Stock data must pass the save gate clean (the text-buffer blockers may only fire
+        // on data the real engine could not survive either), and the cube files must
+        // round-trip byte-exact through the editable model.
+        foreach (var ep in gd.Episodes)
+        {
+            var e = T2A.Tyrian.EditableEpisode.Load(gd, ep);
+            var problems = e.Validate();
+            if (problems.Count > 0)
+            {
+                Console.WriteLine($"ep{ep.Number} stock validation: FAILED");
+                foreach (var p in problems) Console.Error.WriteLine("  " + p);
+                failed = true;
+            }
+            else Console.WriteLine($"ep{ep.Number} stock validation: clean " +
+                $"({e.Advisories().Count} advisories)");
+
+            string cubePath = Path.Combine(dir, e.CubeFileName);
+            if (File.Exists(cubePath))
+            {
+                byte[] orig = File.ReadAllBytes(cubePath);
+                byte[] outBytes = e.BuildCubeBytes();
+                int d = FirstDiff(orig, outBytes);
+                Console.WriteLine($"ep{ep.Number} {e.CubeFileName}: {e.Cubes.Count} cubes " +
+                    (d < 0 ? "round-trip OK" : $"DIFFERS at {d}"));
+                failed |= d >= 0;
+            }
+
+            // Ending import: every stock script must yield nine hint blocks.
+            var fl = T2A.Tyrian.EpisodeFlow.FromScript(e.ScriptLines, e.Levels.Count);
+            if (fl.Ending.Hints.Count != T2A.Tyrian.EpisodeEnding.HintCount)
+            {
+                Console.WriteLine($"ep{ep.Number} ending import: FAILED " +
+                    $"({fl.Ending.Hints.Count} hint blocks)");
+                failed = true;
+            }
+        }
+
+        // Episode 3's ending plays tyrend.anm; episode 1 carries Timed Battle arenas.
+        {
+            var e3 = T2A.Tyrian.EditableEpisode.Load(gd, gd.Episodes.First(x => x.Number == 3));
+            var f3 = T2A.Tyrian.EpisodeFlow.FromScript(e3.ScriptLines, e3.Levels.Count);
+            var e1 = T2A.Tyrian.EditableEpisode.Load(gd, gd.Episodes.First(x => x.Number == 1));
+            var f1 = T2A.Tyrian.EpisodeFlow.FromScript(e1.ScriptLines, e1.Levels.Count);
+            var e5 = T2A.Tyrian.EditableEpisode.Load(gd, gd.Episodes.First(x => x.Number == 5));
+            var f5 = T2A.Tyrian.EpisodeFlow.FromScript(e5.ScriptLines, e5.Levels.Count);
+            // Ep1's second arena is the famous dead file-20 entry, so only DELI imports.
+            bool ok = f3.Ending.Anim && f3.Ending.Screens.Count >= 3 &&
+                      f3.Ending.Hints.All(h => h != null) &&
+                      f1.Arenas.Count >= 1 && f5.Arenas.Count >= 3 &&
+                      f1.Stops.Any(s => s.Warning.Count > 0 || s.Story.Any(sc => sc.WarningFrame));
+            Console.WriteLine(ok
+                ? $"stock endings: ep3 anim + {f3.Ending.Screens.Count} endscreens, " +
+                  $"ep1 {f1.Arenas.Count} + ep5 {f5.Arenas.Count} arenas OK"
+                : $"stock endings: FAILED (ep3 anim {f3.Ending.Anim}, screens {f3.Ending.Screens.Count}, " +
+                  $"ep1 arenas {f1.Arenas.Count}, ep5 arenas {f5.Arenas.Count})");
+            failed |= !ok;
+        }
+
+        // The full-flow round trip: story screens, outpost, warning, ending and arenas all
+        // survive Generate -> FromScript, and generating again reproduces the exact lines.
+        {
+            var flow = new T2A.Tyrian.EpisodeFlow { OwnsScript = true };
+            var s1 = new T2A.Tyrian.FlowStop
+            {
+                LevelFile = 1, Name = "INTRO", Song = 5, Outpost = true,
+                OutpostSong = 7, MapPlanet = 3, CubesFree = 2,
+            };
+            s1.Cubes.AddRange(new[] { 1, 2, 3 });
+            s1.Shop[0].Add(1);
+            s1.Shop[1].AddRange(new[] { 13, 2 });
+            s1.Shop[8].AddRange(new[] { 1, 2, 3 });
+            s1.Story.Add(new T2A.Tyrian.StoryScreen
+            {
+                Fade = 3, Music = 9, Picture = 2, Speed = 4,
+                Lines = { "It begins.", "A ~long~ journey." },
+            });
+            s1.Story.Add(new T2A.Tyrian.StoryScreen
+            {
+                Picture = 903, Speed = 2, Lines = { "Palette clear." },
+            });
+            var s2 = new T2A.Tyrian.FlowStop
+            {
+                LevelFile = 2, Name = "BOSS", Song = 9, Galaga = true, Extra = true,
+                SaveBackup = true, SavePoint = true,
+                WarnFrame = true, WarnRed = 4, WarnSpeed = 5,
+            };
+            s2.Warning.AddRange(new[] { "Danger ahead.", "Turn back." });
+            flow.Stops.Add(s1);
+            flow.Stops.Add(s2);
+            flow.Ending.Anim = true;
+            flow.Ending.AnimMusic = 9;
+            flow.Ending.Screens.Add(new T2A.Tyrian.StoryScreen
+            {
+                Fade = 2, Music = 10, Picture = 7, Wipe = 1, Lines = { "The end of it all." },
+            });
+            flow.Ending.HintMusic = 31;
+            flow.Ending.HintPic = 5;
+            flow.Ending.Hints[0] = new List<string> { "Hint one:", "shoot things" };
+            flow.Ending.Hints[8] = new List<string> { "Hint nine." };
+            flow.Arenas.Add(new T2A.Tyrian.BattleArena { LevelFile = 1, Name = "ARENA A", Song = 3 });
+            flow.Arenas.Add(new T2A.Tyrian.BattleArena { LevelFile = 2, Name = "ARENA B", Song = 4 });
+
+            var lines = flow.Generate();
+            var back = T2A.Tyrian.EpisodeFlow.FromScript(lines, 2);
+            bool ok = FlowsEqual(flow, back, out string why) && back.OwnsScript;
+            if (!ok) Console.Error.WriteLine("  flow round-trip lost: " + why);
+            var lines2 = back.Generate();
+            if (ok && !lines2.SequenceEqual(lines))
+            {
+                int at = Enumerable.Range(0, Math.Min(lines.Count, lines2.Count))
+                    .FirstOrDefault(i => lines[i] != lines2[i], Math.Min(lines.Count, lines2.Count));
+                Console.Error.WriteLine($"  regenerate differs at line {at}: " +
+                    $"[{(at < lines.Count ? lines[at] : "")}] vs [{(at < lines2.Count ? lines2[at] : "")}]");
+                ok = false;
+            }
+
+            // A blank episode must validate clean and resolve into a route with an ending.
+            var blank = new T2A.Tyrian.EditableEpisode();
+            blank.Levels.Add(T2A.Tyrian.EditableLevel.CreateNew('w'));
+            blank.StartBlank('w');
+            ok &= blank.Validate().Count == 0;
+            var bscript = new T2A.Tyrian.EpisodeScriptFile();
+            foreach (var l in blank.ScriptLines)
+            {
+                bscript.Lines.Add(l);
+                if (l.Length > 0 && l[0] == '*') bscript.SectionStart.Add(bscript.Lines.Count);
+            }
+            var bgraph = T2A.Tyrian.EpisodeGraph.Build(bscript, gd.PlanetNameList);
+            ok &= bgraph.Nodes.Any(n => n.Kind == T2A.Tyrian.GraphNodeKind.NextEpisode);
+
+            Console.WriteLine(ok
+                ? $"full flow: story+warning+ending+arenas round-trip OK ({lines.Count} lines), blank episode ends"
+                : "full flow: FAILED");
+            failed |= !ok;
+        }
+
+        // The text-screen preview pipeline: pictures decode, text lands pixels.
+        {
+            bool ok = true;
+            var pics = gd.Pics;
+            if (pics == null || pics.Count < 10 || pics.Decode(1) == null)
+            {
+                Console.Error.WriteLine($"  tyrian.pic: {(pics == null ? "missing" : $"{pics.Count} pics")}");
+                ok = false;
+            }
+            var (screen, pal) = T2A.Tyrian.TextScreenRender.Compose(pics, gd.Main, 2,
+                new[] { "Warning test 123", "~highlight~ pass" }, warningFrame: true, red: false);
+            int lit = 0;
+            for (int i = 0; i < screen.Length; i++) if (screen[i] != 0) lit++;
+            ok &= lit > 2000 && pal == T2A.Tyrian.PicFile.PaletteFor(2);
+            Console.WriteLine(ok
+                ? $"text screens: {gd.Pics?.Count ?? 0} pics, compose lit {lit}px in palette {pal} OK"
+                : $"text screens: FAILED (lit {lit}, pal {pal})");
+            failed |= !ok;
+        }
+
+        // The Flow builder's proof: a stock script imported and rewritten must come out as
+        // a script the engine-style parsers still resolve — every stop's ]L intact, the
+        // outposts' shops parsed back identically, and the whole thing one playable chain.
+        {
+            var ep1 = gd.Episodes[0];
+            var e = T2A.Tyrian.EditableEpisode.Load(gd, ep1);
+            var flow = T2A.Tyrian.EpisodeFlow.FromScript(e.ScriptLines, e.Levels.Count);
+            bool ok = flow.Stops.Count >= 10;   // ep1's main route
+            var lines = flow.Generate();
+
+            // Encrypt/decrypt round trip of the generated text.
+            string tmp = Path.Combine(Path.GetTempPath(), "t2a-checkeditor");
+            Directory.CreateDirectory(tmp);
+            string scr = Path.Combine(tmp, "levels1-flow.dat");
+            File.WriteAllBytes(scr, T2A.Tyrian.EpisodeScript.EncryptStrings(lines));
+            var back = T2A.Tyrian.EpisodeScript.DecryptStrings(scr);
+            ok &= back.SequenceEqual(lines);
+
+            // The ]L chain: one entry per stop plus one per arena, all real files.
+            var parsed = T2A.Tyrian.EpisodeScript.ParseLevels(scr);
+            ok &= parsed.Count == flow.Stops.Count + flow.Arenas.Count;
+            ok &= parsed.All(l => l.LvlFileNum >= 1 && l.LvlFileNum <= e.Levels.Count);
+
+            // Self-import is lossless: stops, outposts, cubes and shops survive.
+            var again = T2A.Tyrian.EpisodeFlow.FromScript(lines, e.Levels.Count);
+            ok &= again.OwnsScript && again.Stops.Count == flow.Stops.Count;
+            for (int i = 0; ok && i < flow.Stops.Count; i++)
+            {
+                var a = flow.Stops[i];
+                var b = again.Stops[i];
+                bool same = a.LevelFile == b.LevelFile && a.Song == b.Song &&
+                      a.Outpost == b.Outpost && a.SavePoint == b.SavePoint &&
+                      a.Cubes.SequenceEqual(b.Cubes) &&
+                      a.Warning.SequenceEqual(b.Warning);
+                for (int r = 0; same && r < T2A.Tyrian.EpisodeFlow.ShopRowCount; r++)
+                    same = a.Shop[r].SequenceEqual(b.Shop[r]);
+                if (!same)
+                    Console.Error.WriteLine($"  flow stop {i + 1} did not survive re-import: " +
+                        $"file {a.LevelFile}/{b.LevelFile} song {a.Song}/{b.Song} " +
+                        $"outpost {a.Outpost}/{b.Outpost} save {a.SavePoint}/{b.SavePoint} " +
+                        $"cubes [{string.Join(",", a.Cubes)}]/[{string.Join(",", b.Cubes)}] " +
+                        $"warn {a.Warning.Count}/{b.Warning.Count}");
+                ok &= same;
+            }
+
+            // And the real graph walker resolves it into one connected route that ends.
+            // Arena levels hang off the Timed Battle edge, so they count as nodes too.
+            var script = T2A.Tyrian.EpisodeScriptFile.Load(scr);
+            var graph = T2A.Tyrian.EpisodeGraph.Build(script, gd.PlanetNameList);
+            int levelNodes = graph.Nodes.Count(n => n.Kind == T2A.Tyrian.GraphNodeKind.Level);
+            bool hasEnd = graph.Nodes.Any(n => n.Kind == T2A.Tyrian.GraphNodeKind.NextEpisode);
+            ok &= levelNodes == flow.Stops.Count + flow.Arenas.Count && hasEnd;
+
+            Console.WriteLine(ok
+                ? $"flow builder: {flow.Stops.Count} stops -> script -> graph OK (chain + episode end)"
+                : $"flow builder: FAILED (stops {flow.Stops.Count}, parsed {parsed.Count}, " +
+                  $"nodes {levelNodes}, end {hasEnd}, " +
+                  $"encRt {back.SequenceEqual(lines)}, files {parsed.All(l => l.LvlFileNum >= 1 && l.LvlFileNum <= e.Levels.Count)}, " +
+                  $"owns {again.OwnsScript}, reCount {again.Stops.Count})");
             failed |= !ok;
         }
 

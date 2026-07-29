@@ -132,6 +132,22 @@ public sealed class GameData
 
     public MainShapes Main => _main ??= MainShapes.Load(Path.Combine(DataDir, "tyrian.shp"));
 
+    private PicFile? _pics;
+    private bool _picsTried;
+
+    /// <summary>tyrian.pic, the ]P/]U backdrops; null when the file is absent or unreadable.</summary>
+    public PicFile? Pics
+    {
+        get
+        {
+            if (_picsTried) return _pics;
+            _picsTried = true;
+            try { _pics = PicFile.Load(Path.Combine(DataDir, "tyrian.pic")); }
+            catch { _pics = null; }
+            return _pics;
+        }
+    }
+
     /// <summary>
     /// The Christmas shape file. Xmas mode is a wholesale swap of tyrian.shp for tyrianc.shp
     /// (opentyr.c:281) — same 13 sub-tables, different art — so it is the same structure read
