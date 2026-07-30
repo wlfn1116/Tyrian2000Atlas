@@ -53,6 +53,7 @@ public sealed class AppSettings
     public bool ExpandedParallax { get; set; }         // Engaged sub-option: wider all-layer parallax sweep
     public bool MirrorLayers { get; set; } = true;     // Engaged sub-option: mirror layers past their side edges
     public bool TallStarfield { get; set; } = true;    // the build's rewritten starfield (either mode)
+    public bool IceBaseShots { get; set; } = true;     // the build's "Ice Base Shots" restore (either mode)
     public bool ShowScreenFilter { get; set; } = true;
     public bool ShowSmoothies { get; set; } = true; // retained JSON name: terrain smoothies
     // Nullable so an older settings file can inherit its former broad smoothie toggle.

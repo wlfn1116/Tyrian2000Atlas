@@ -134,6 +134,7 @@ internal static unsafe class Program
             settings.ShowScreenFlip = false;
         if (Array.IndexOf(args, "--no-boss-bars") >= 0) settings.ShowBossBars = false;
         if (Array.IndexOf(args, "--vanilla-stars") >= 0) settings.TallStarfield = false;
+        if (Array.IndexOf(args, "--vanilla-bases") >= 0) settings.IceBaseShots = false;
         if (Array.IndexOf(args, "--engaged") >= 0) settings.Engaged = true;
         if (Array.IndexOf(args, "--click-kill") >= 0) settings.ClickKill = true;
         if (Array.IndexOf(args, "--showtree") >= 0) settings.ShowTree = true;
@@ -1189,6 +1190,9 @@ internal static unsafe class Program
         sim.ExpandedParallax = sim.Engaged && Array.IndexOf(args, "--parallax") >= 0;
         sim.MirrorLayers = sim.Engaged && Array.IndexOf(args, "--mirror") >= 0;
         sim.TallStarfield = Array.IndexOf(args, "--vanilla-stars") < 0;
+        // ...and the two build settings that are not Engaged-only, so a regression sweep can
+        // still ask for a byte-for-byte vanilla run (--vanilla-stars --vanilla-bases).
+        sim.IceBaseShots = Array.IndexOf(args, "--vanilla-bases") < 0;
         int plx = Array.IndexOf(args, "--player");
         if (plx >= 0 && plx + 2 < args.Length)
         { sim.PlayerX = int.Parse(args[plx + 1]); sim.PlayerY = int.Parse(args[plx + 2]); }

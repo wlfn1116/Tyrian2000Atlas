@@ -96,8 +96,8 @@ public sealed class GameSim
     /// enemy/shot cull bounds all follow, exactly as the Engaged source derives them
     /// (notes.md §Widescreen).
     /// A sim parameter — it changes the simulation, so a change requires a rebuild. Off =
-    /// vanilla, byte-for-byte (the one exception being <see cref="TallStarfield"/>, which is
-    /// offered in both modes).</summary>
+    /// vanilla, byte-for-byte, save for the two settings offered in both modes:
+    /// <see cref="TallStarfield"/> and <see cref="IceBaseShots"/>.</summary>
     public bool Engaged;
     /// <summary>Engaged-only "Extra Parallax" (OpenTyrian2000-Engaged commits edd8118 +
     /// ae13d1c): the near terrain layer pans across EXACTLY its 336px map — mapXOfs sweeps 36
@@ -116,9 +116,26 @@ public sealed class GameSim
     /// enemy spawns, exactly as the difference does between the real builds. Unlike
     /// <see cref="ExpandedParallax"/> / <see cref="MirrorLayers"/> this is NOT gated on
     /// <see cref="Engaged"/>: the bug it fixes is just as visible at the vanilla width. It is
-    /// therefore the one setting that can make vanilla playback differ from the stock engine —
-    /// leave it off for a byte-for-byte vanilla run.</summary>
+    /// therefore the one setting that can make EVERY vanilla level differ from the stock engine —
+    /// leave it off (with <see cref="IceBaseShots"/>) for a byte-for-byte vanilla run.</summary>
     public bool TallStarfield = true;
+    /// <summary>
+    /// The Engaged build's "Ice Base Shots" (its <c>restoreBaseDispensers</c>, commits
+    /// 2ea7cca..37edcfa), on there by default and on here to match. The 2x2 dispenser base
+    /// built from enemies 80-83 ships with a full 17-frame hatch open/close cycle and nothing
+    /// in any level that can ever trigger it: no turrets, no launcher, no arming event. The
+    /// restore hands the four pieces their working single-tile cousin's launch cadence so the
+    /// cycle finally plays, and hangs a volley off the frame where the hatch stands open — see
+    /// <see cref="MakeEnemy"/> and <see cref="DispenserFire"/>.
+    ///
+    /// Like <see cref="TallStarfield"/> and unlike <see cref="ExpandedParallax"/> /
+    /// <see cref="MirrorLayers"/> this is NOT gated on <see cref="Engaged"/>: it is a data
+    /// restoration, not a widescreen one. It is also the narrowest of the build flags —
+    /// enemies 80-83 are placed by two levels in the whole game (CAMANIS twice, ICESECRET
+    /// sixteen times), and everywhere else the flag costs the simulation nothing at all. A sim
+    /// parameter on those two: it spawns shots and draws from the level RNG, so a change needs
+    /// a rebuild.</summary>
+    public bool IceBaseShots = true;
     /// <summary>Playfield crop width in effect: <see cref="EngagedViewW"/> (299) in Engaged mode,
     /// else vanilla <see cref="ViewW"/> (264). Drives the display crop, screen filter, flip
     /// and spotlight geometry.</summary>
@@ -1866,6 +1883,15 @@ public sealed class GameSim
                     e.enemycycle++;
                     if (e.enemycycle == e.animax) e.aniactive = e.aniwhenfire;
                     else if (e.enemycycle > e.ani) e.enemycycle = B8(e.animin);
+
+                    // Ice Base Shots: the restored base fires on frame 9 — the one frame where
+                    // the top hatch stands open on its lit eye and the orb below it flares
+                    // white. Hung off the animation advance rather than off the launch tick
+                    // (which draws a closed hatch), so muzzle and art are in step and it lands
+                    // exactly once per cycle even while the base is outside the firing window.
+                    if (IceBaseShots && FireEnabled && e.enemytype == 80 &&
+                        e.enemycycle == 9 && e.iced == 0 && !e.edamaged)
+                        DispenserFire(ref e, tempMapXOfs);
                 }
 
                 if (e.egr[Math.Clamp(e.enemycycle - 1, 0, 19)] == 999)
@@ -2163,6 +2189,135 @@ public sealed class GameSim
             }
         }
         return false;
+    }
+
+    /// <summary>The four tiles of the orb's lightning column, top to bottom: rows of the
+    /// player-shot sheet, four consecutive frames each.</summary>
+    private static readonly int[] BoltSegments = { 210, 229, 248, 267 };
+
+    /// <summary>
+    /// The restored dispenser volley (<see cref="IceBaseShots"/>), fired from piece 80 on the
+    /// frame its hatch stands open. Two emitters, both on the assembly's own centre line —
+    /// assembly x 22, i.e. ex+16, two pixels left of the geometric centre of art spanning
+    /// ex-6..ex+42 by ey-35..ey+21:
+    ///
+    ///   * the eye on the top rim fires one weapon-59 round — the same player-aimed shot enemy
+    ///     84's turret fires, with the same difficulty aim bonus;
+    ///   * the orb below it discharges a 1x4 lightning column: four 12x14 shots stacked 14px
+    ///     apart, travelling straight down at speed 10. The segments are rows 210/229/248/267
+    ///     of the player-shot sheet, so the stock sgr + animate draw path animates the whole
+    ///     bolt with no renderer change — and because that sheet is always resident, the bolt
+    ///     draws whatever enemy banks the level happens to have loaded. Spawning all four on
+    ///     one tick keeps them on the same frame, so the column always composes a whole
+    ///     authored bolt. Its voice is S_WEAPON_15, the sound weapons 238-242 fire this exact
+    ///     tile set with.
+    ///
+    /// Sprites blit from their top-left, so a 12x14 shot centres on an emitter at
+    /// (emitter - 6, emitter - 7): the eye sits at ex+16 / ey-27 and its shot spawns at
+    /// ex+10 / ey-34, and the bolt's top edge starts level with the top of the orb's white
+    /// flare (ey+4) so the column reads as leaving the orb.
+    ///
+    /// The build's endless-mode scaling — shot speed / damage, seekers, champions and the
+    /// rising-tide extra bolts — has no counterpart here; the atlas only runs campaign levels.
+    /// The campaign path is reproduced whole, RNG draws included: both sound-slot rolls happen
+    /// whether or not there is pool room for what they announce, exactly as in the build, so a
+    /// run stays in step with it.
+    /// </summary>
+    private void DispenserFire(ref Enemy e, int tempMapXOfs)
+    {
+        const int eyeWeapon = 59;      // enemy 84's aimed turret weapon
+        const int boltSpeed = 10;
+        var w = _wd.Get(eyeWeapon);
+        if (!w.Loaded) return;
+
+        int eyeX = e.ex + 10, eyeY = e.ey - 34;
+        int orbX = e.ex + 10, orbY = e.ey + 4;
+
+        int b;
+        for (b = 0; b < _shotAvail.Length; b++)
+            if (_shotAvail[b] == 1) break;
+        if (b == _shotAvail.Length)
+        {
+            Threat?.OnShotBlocked();
+            return;
+        }
+        _shotAvail[b] = 0;
+
+        {
+            uint t;
+            do { t = _rng.Next() % 8; } while (t == 3);
+            Queue((int)t, w.Sound);
+        }
+
+        ref var eye = ref _shot[b];
+        eye.sx = eyeX + tempMapXOfs;
+        eye.sy = eyeY;
+        eye.tx = w.Tx;
+        eye.ty = w.Ty;
+        eye.duration = w.Del[0];
+        eye.animate = 0;
+        eye.animax = w.WeapAni;
+        eye.sgr = w.Sg[0];
+        eye.syc = w.Acceleration;
+        eye.sxc = w.AccelerationX;
+        eye.sxm = w.Sx[0];
+        eye.sym = w.Sy[0];
+
+        {
+            int aim = w.Aim;
+            if (_s.difficultyLevel > 2) aim += _s.difficultyLevel - 2;
+            // PlayerX is the undecremented player[0].x, which is what the build aims this one
+            // at ("(targetX + 25)") — unlike the ordinary turret path, whose own +25 puts it
+            // back to the same place.
+            int aimX = PlayerX - eyeX - tempMapXOfs - 4;
+            if (aimX == 0) aimX = 1;
+            int aimY = PlayerY - eyeY;
+            if (aimY == 0) aimY = 1;
+            int mag = Math.Max(Math.Abs(aimX), Math.Abs(aimY));
+            eye.sxm = (int)MathF.Round((float)aimX / mag * aim, MidpointRounding.AwayFromZero);
+            eye.sym = (int)MathF.Round((float)aimY / mag * aim, MidpointRounding.AwayFromZero);
+        }
+        Threat?.OnShotCreated(w.Attack[0], w.Aim, w.Tx, w.Ty);
+
+        {
+            uint t;
+            do { t = _rng.Next() % 8; } while (t == 3);
+            Queue((int)t, 15);   // S_WEAPON_15
+        }
+
+        // Never emit a partial bolt: four broken-off tiles are a broken sprite, not a weaker
+        // shot, so the pool has to hold the whole column or none of it.
+        int free = 0;
+        for (int z = 0; z < _shotAvail.Length; z++)
+            if (_shotAvail[z] == 1) free++;
+        if (free < BoltSegments.Length)
+        {
+            Threat?.OnShotBlocked();
+            return;
+        }
+
+        for (int s = 0; s < BoltSegments.Length; s++)
+        {
+            int c;
+            for (c = 0; c < _shotAvail.Length; c++)
+                if (_shotAvail[c] == 1) break;
+            _shotAvail[c] = 0;
+
+            ref var bolt = ref _shot[c];
+            bolt.sx = orbX + tempMapXOfs;
+            bolt.sy = orbY + 14 * s;
+            bolt.sxm = 0;
+            bolt.sym = boltSpeed;
+            bolt.sxc = 0;
+            bolt.syc = 0;
+            bolt.tx = 0;
+            bolt.ty = 0;
+            bolt.duration = 255;
+            bolt.animate = 0;
+            bolt.animax = 4;
+            bolt.sgr = BoltSegments[s];
+            Threat?.OnShotCreated(w.Attack[0], 0, 0, 0);
+        }
     }
 
     private void UpdateEnemyShots(bool draw)
@@ -2553,6 +2708,19 @@ public sealed class GameSim
         {
             e.launchtype = dat.ELaunchType % 1000;
             e.launchspecial = dat.ELaunchType / 1000;
+        }
+        // Ice Base Shots: the dormant 2x2 base (pieces 80-83) borrows the cadence of its
+        // working single-tile cousin (enemy 86, elaunchfreq 40), which is what finally plays
+        // the 17-frame hatch cycle the data ships for it. All four quadrants are created on
+        // the same tick, so one shared countdown opens the whole hatch as one. launchtype
+        // stays 0 — the launch routine flips aniactive before it tests launchtype, so the
+        // trigger only starts the animation and spawns nothing; the volley hangs off frame 9
+        // instead (see DispenserFire). launchspecial 0 drops the player-proximity gate.
+        if (IceBaseShots && eDatI is >= 80 and <= 83)
+        {
+            e.launchfreq = 40;
+            e.launchwait = 40;
+            e.launchspecial = 0;
         }
         e.xaccel = dat.XAccel;
         e.yaccel = dat.YAccel;
