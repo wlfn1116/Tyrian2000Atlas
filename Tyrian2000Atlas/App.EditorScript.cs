@@ -399,9 +399,12 @@ public sealed unsafe partial class App
                 ch = true;
             }
         ImGui.SameLine(0, 14);
-        ImGui.SetNextItemWidth(100);
         int song = s.Song;
-        if (ImGui.InputInt("song (1-41)", ref song)) { s.Song = Math.Clamp(song, 1, 41); ch = true; }
+        if (SongCombo("song", ref song, 220f, "]L song field - 1..41, music.mus index."))
+        {
+            s.Song = Math.Clamp(song, 1, 41);
+            ch = true;
+        }
 
         ch |= ImGui.Checkbox("save point", ref s.SavePoint);
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("]s - dying after this sends the player back here.");
@@ -536,10 +539,13 @@ public sealed unsafe partial class App
             return ch;
         }
 
-        ImGui.SetNextItemWidth(100);
         int osong = s.OutpostSong;
-        if (ImGui.InputInt("shop song", ref osong)) { s.OutpostSong = Math.Clamp(osong, 0, 41); ch = true; }
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("]i - the music the shop plays. Stock outposts use 2.");
+        if (SongCombo("shop song", ref osong, 220f,
+                "]i - the music the shop plays. Stock outposts use 2.", zeroLabel: "(keep current)"))
+        {
+            s.OutpostSong = Math.Clamp(osong, 0, 41);
+            ch = true;
+        }
         ImGui.SameLine(0, 14);
         ch |= DrawPlanetPicker(s);
 
@@ -830,10 +836,13 @@ public sealed unsafe partial class App
         if (end.Anim)
         {
             ImGui.SameLine(0, 12);
-            ImGui.SetNextItemWidth(100);
             int am = end.AnimMusic;
-            if (ImGui.InputInt("anim song", ref am)) { end.AnimMusic = Math.Clamp(am, 0, 41); ch = true; }
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Started just before the animation; 0 = keep. Stock uses 9.");
+            if (SongCombo("anim song", ref am, 220f,
+                    "Started just before the animation. Stock uses 9.", zeroLabel: "(keep playing)"))
+            {
+                end.AnimMusic = Math.Clamp(am, 0, 41);
+                ch = true;
+            }
         }
 
         ImGui.Dummy(new Vector2(0, 4));
@@ -910,10 +919,13 @@ public sealed unsafe partial class App
             }
 
         UiSection("The score screen's dress", AcRoutes);
-        ImGui.SetNextItemWidth(100);
         int hm = end.HintMusic;
-        if (ImGui.InputInt("song (0 = keep)", ref hm)) { end.HintMusic = Math.Clamp(hm, 0, 41); ch = true; }
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Stock endings play 31 here.");
+        if (SongCombo("song", ref hm, 220f, "Stock endings play 31 here.",
+                zeroLabel: "(keep playing)"))
+        {
+            end.HintMusic = Math.Clamp(hm, 0, 41);
+            ch = true;
+        }
         ImGui.SameLine(0, 12);
         ImGui.SetNextItemWidth(180);
         if (ImGui.BeginCombo("backdrop", PicLabel(end.HintPic)))
@@ -1000,9 +1012,8 @@ public sealed unsafe partial class App
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("click to edit the arena's 9-char name");
             }
             ImGui.SameLine(0, 8);
-            ImGui.SetNextItemWidth(90);
             int song = a.Song;
-            if (ImGui.InputInt("song", ref song)) { a.Song = Math.Clamp(song, 1, 41); ch = true; }
+            if (SongCombo("song", ref song, 200f)) { a.Song = Math.Clamp(song, 1, 41); ch = true; }
             ImGui.SameLine(0, 8);
             if (UiButton("x", AcEnemy, "remove this arena", 26f)) kill = i;
             ImGui.PopID();
@@ -1202,9 +1213,7 @@ public sealed unsafe partial class App
         ch |= ImGui.InputInt("level file", ref file);
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip($"1-based section of tyrian{ep.Number}.lvl - the Levels tab's numbering.");
-        ImGui.SetNextItemWidth(110);
-        ch |= ImGui.InputInt("song", ref song);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("1..41, music.mus index.");
+        ch |= SongCombo("song", ref song, 250f, "1..41, music.mus index.");
         ImGui.SetNextItemWidth(110);
         ch |= ImGui.InputInt("next section", ref next);
         if (ImGui.IsItemHovered())
