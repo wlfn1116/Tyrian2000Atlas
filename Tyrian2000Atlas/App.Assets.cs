@@ -112,6 +112,65 @@ public readonly record struct SpriteSource(SpriteStore Store, int Index, bool Xm
 }
 
 /// <summary>
+/// One full-screen 320x200 painting. Both stores are PCX bodies, reached two different ways:
+/// the fourteen pictures packed into tyrian.pic that the menus and the episode scripts' ]P /
+/// ]U / ]V / ]R load (picload.c:JE_loadPic), and the loose .pcx files beside them, of which
+/// the engine only ever loads tshp2.pcx (pcxload.c:JE_loadPCX, the "]P 0" backdrop).
+///
+/// Which is which: <see cref="Pic"/> 1..14 is a tyrian.pic entry, 0 means the loose file
+/// <see cref="File"/> instead.
+/// </summary>
+public readonly record struct PictureSource(int Pic, string File = "")
+{
+    public static PictureSource FromPicFile(int pic1Based) => new(pic1Based);
+    public static PictureSource FromLooseFile(string name) => new(0, name);
+
+    /// <summary>A tyrian.pic entry rather than a loose .pcx.</summary>
+    public bool InPicFile => Pic >= 1;
+
+    /// <summary>What the picture is for. Only the numbers the engine names in a literal
+    /// JE_loadPic call can be pinned to a screen; the rest are reachable only through a
+    /// script's ]P, which is what the note says rather than guessing at their contents.</summary>
+    private static string PicUse(int pic) => pic switch
+    {
+        1 => "shop & menu backdrop",
+        2 => "menus, scores, endless",
+        3 => "in-game frame, 1 player",
+        4 => "title screen",
+        6 => "in-game frame, 2 players",
+        10 => "intro logo, first",
+        11 => "Destruct backdrop",
+        12 => "intro logo, second",
+        13 => "Timed Battle name entry",
+        _ => "script backdrop (]P)",
+    };
+
+    private static string FileUse(string name) =>
+        name.Equals("tshp2.pcx", StringComparison.OrdinalIgnoreCase)
+            ? "the \"]P 0\" backdrop"
+            : "loose file, not loaded by the game";
+
+    public string Title => InPicFile
+        ? $"tyrian.pic #{Pic}  ·  {PicUse(Pic)}"
+        : $"{File.ToLowerInvariant()}  ·  {FileUse(File)}";
+
+    public string ListTitle => InPicFile ? $"Picture {Pic:00}" : File.ToLowerInvariant();
+
+    public string ListNote => InPicFile ? PicUse(Pic) : FileUse(File);
+
+    /// <summary>The palette the game shows it in: pcxpal for a tyrian.pic entry
+    /// (pcxmast.c:23), the file's own trailing block for a loose .pcx.</summary>
+    public string PaletteNote => InPicFile
+        ? $"palette {PicFile.PaletteFor(Pic)}"
+        : "the file's own palette";
+
+    /// <summary>What an exported file is named after, so it can be traced back.</summary>
+    public string FileStem => InPicFile
+        ? $"tyrianpic_{Pic:00}"
+        : Path.GetFileNameWithoutExtension(File).ToLowerInvariant();
+}
+
+/// <summary>
 /// Shared asset plumbing for the reference browsers: the game's own fonts, and packed
 /// atlases for any sprite bank in the data set. Atlases are keyed by (bank, palette) and
 /// built on demand -- a browser can page through 36 banks without paying for the ones it
@@ -155,6 +214,7 @@ public sealed unsafe partial class App
             _cubeFace.Dispose();
             _cubeFaceKey = (-1, -1, -1);
         }
+        if (_picRenderer == rendererHandle) DropPictureImage();
     }
 
     private SpriteAtlas? Atlas(SpriteSource src, int palette)
@@ -213,6 +273,8 @@ public sealed unsafe partial class App
         _peerKey = "";
         _enemySelected = -1;
         _sprSelected = -1;
+        _picSelected = -1;          // the new folder's picture list is a different list
+        DropPictureImage();
         _usage = null;              // song/sound cross-references belong to the old data set
     }
 
@@ -474,6 +536,17 @@ public sealed unsafe partial class App
             for (int i = 0; i <= 6; i++) list.Add(SpriteSource.MainBank(i, xmas: true));
         }
         foreach (char c in GameData.TileSetChars) list.Add(SpriteSource.Tiles(c));
+        return list;
+    }
+
+    /// <summary>Every full-screen picture the browser can show: tyrian.pic's own entries in
+    /// the order the file packs them, then the loose .pcx files in the data folder.</summary>
+    private List<PictureSource> AllPictureSources()
+    {
+        var list = new List<PictureSource>();
+        if (_gd == null) return list;
+        for (int i = 1; i <= (_gd.Pics?.Count ?? 0); i++) list.Add(PictureSource.FromPicFile(i));
+        foreach (string name in _gd.PcxNames) list.Add(PictureSource.FromLooseFile(name));
         return list;
     }
 }

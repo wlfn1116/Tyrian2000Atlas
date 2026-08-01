@@ -202,6 +202,8 @@ public sealed unsafe partial class App
         _sprCols = Math.Clamp(settings.SpritesColumns, 0, 40);
         _sprCheckerboard = settings.SpritesCheckerboard ?? true;
         _sprNumbers = settings.SpritesNumbers;
+        _picZoom = Math.Clamp(settings.PictureZoom, 0, 4);
+        _picOwnPalette = settings.PictureGamePalette ?? true;
         _enemyMotion = settings.EnemyMotion ?? true;
         _itemFork = settings.ItemsFork ?? true;
         if (settings.SpriteListWidth > 100f) _sprListW = settings.SpriteListWidth;
@@ -347,6 +349,8 @@ public sealed unsafe partial class App
         s.SpritesColumns = _sprCols;
         s.SpritesCheckerboard = _sprCheckerboard;
         s.SpritesNumbers = _sprNumbers;
+        s.PictureZoom = _picZoom;
+        s.PictureGamePalette = _picOwnPalette;
         s.EnemyMotion = _enemyMotion;
         s.ItemsFork = _itemFork;
         s.AllEpisodes = _allEpisodes;

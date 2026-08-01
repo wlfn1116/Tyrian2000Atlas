@@ -1268,7 +1268,7 @@ public sealed unsafe partial class App
         'Q' => "]Q - END OF EPISODE: shows score + one of the NINE '#'-blocks that must follow, then hands over to the next episode.",
         'A' => "]A - play the ending animation (tyrend.anm).",
         'W' => "]W(y/n) RS - text screen until a '#' line: y = WARNING bars, R = red alert digit, S = type-in speed. Max 12 lines of 60 chars.",
-        'P' => "]P n - backdrop: 0 = ship-editor PCX, 1..14 = tyrian.pic picture (fade in), 901+ = clear to a palette.",
+        'P' => "]P n - backdrop: 0 = tshp2.pcx, 1..14 = tyrian.pic picture (fade in), 901+ = clear to a palette.",
         'U' => "]U n - picture n wipes in upward.",
         'V' => "]V n - picture n wipes in downward.",
         'R' => "]R n - picture n wipes in rightward.",
@@ -1307,8 +1307,8 @@ public sealed unsafe partial class App
             ("]W(y/n) RS", "a text screen, lines until a '#'. y = flashing WARNING bars and\n" +
                         "siren; R (tens) = red-alert mode; S (ones) = per-character glow\n" +
                         "delay. The engine holds 12 lines of 60 characters."),
-            ("]P ]U ]V ]R", "backdrops from tyrian.pic: ]P fades picture n in (0 = ship-editor\n" +
-                        "PCX, 901+ = clear to palette n-900); ]U/]V/]R wipe it in\nup / down / rightward."),
+            ("]P ]U ]V ]R", "backdrops from tyrian.pic: ]P fades picture n in (0 = the loose\n" +
+                        "tshp2.pcx, 901+ = clear to palette n-900); ]U/]V/]R wipe it in\nup / down / rightward."),
             ("]C ]B ]F", "transitions: fade + dark palette / fade to black / white flash."),
             ("]M n", "play song n. ]@ toggles the alternate text colour bank."),
             ("]n", "re-enable text screens after an ESC skip."),

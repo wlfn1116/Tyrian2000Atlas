@@ -32,6 +32,8 @@ internal static unsafe class Program
             return SpriteGrid(args);
         if (Array.IndexOf(args, "--checksprites") >= 0)
             return CheckSprites();
+        if (Array.IndexOf(args, "--checkpics") >= 0)
+            return CheckPictures();
         if (Array.IndexOf(args, "--checkaudio") >= 0)
             return CheckAudio();
         if (Array.IndexOf(args, "--checktimelines") >= 0)
@@ -1003,6 +1005,79 @@ internal static unsafe class Program
             }
         }
         return 0;
+    }
+
+    /// <summary>
+    /// Headless check of the full-screen pictures: every tyrian.pic entry and every loose
+    /// .pcx in the data folder decodes at its header's own size with a plausible spread of
+    /// colours. Both formats are RLE, and the way an RLE decoder fails is by running out of
+    /// stream early and leaving the rest of the picture at index 0 -- which is what the
+    /// "index 0" share reports, and why a picture that is mostly one colour is called out
+    /// rather than silently accepted.
+    /// </summary>
+    static int CheckPictures()
+    {
+        string? dir = T2A.Tyrian.GameData.FindDataDir();
+        if (dir == null) { Console.Error.WriteLine("no data dir"); return 1; }
+        var gd = new T2A.Tyrian.GameData(dir);
+        bool failed = false;
+
+        // Distinct colours used, and how much of the picture is index 0.
+        static (int Colours, int Zeros) Spread(byte[] px)
+        {
+            var seen = new bool[256];
+            int n = 0, z = 0;
+            foreach (byte b in px)
+            {
+                if (b == 0) z++;
+                if (!seen[b]) { seen[b] = true; n++; }
+            }
+            return (n, z);
+        }
+
+        var pics = gd.Pics;
+        if (pics == null) { Console.Error.WriteLine("tyrian.pic: missing"); return 1; }
+        Console.WriteLine($"tyrian.pic: {pics.Count} pictures");
+        for (int i = 1; i <= pics.Count; i++)
+        {
+            var px = pics.Decode(i);
+            if (px == null)
+            {
+                Console.Error.WriteLine($"  pic {i,2}: FAILED to decode");
+                failed = true;
+                continue;
+            }
+            var (colours, zeros) = Spread(px);
+            int zeroPct = zeros * 100 / px.Length;
+            bool ok = px.Length == T2A.Tyrian.PicFile.W * T2A.Tyrian.PicFile.H
+                      && colours >= 16 && zeroPct < 90;
+            Console.WriteLine($"  pic {i,2}: 320x200  palette {T2A.Tyrian.PicFile.PaletteFor(i),2}  " +
+                $"{colours,3} colours  {zeroPct,3}% index 0  {(ok ? "OK" : "SUSPECT")}");
+            failed |= !ok;
+        }
+
+        Console.WriteLine($"loose .pcx: {gd.PcxNames.Count} file(s)");
+        foreach (string name in gd.PcxNames)
+        {
+            var img = gd.GetPcx(name);
+            if (img == null)
+            {
+                Console.Error.WriteLine($"  {name}: FAILED to decode");
+                failed = true;
+                continue;
+            }
+            var (colours, zeros) = Spread(img.Pixels);
+            int zeroPct = zeros * 100 / Math.Max(1, img.Pixels.Length);
+            bool ok = img.W > 0 && img.H > 0 && img.Pixels.Length == img.W * img.H
+                      && img.Palette != null && colours >= 16 && zeroPct < 90;
+            Console.WriteLine($"  {name,-14} {img.W}x{img.H}  " +
+                $"{(img.Palette != null ? "own palette" : "NO PALETTE")}  " +
+                $"{colours,3} colours  {zeroPct,3}% index 0  {(ok ? "OK" : "SUSPECT")}");
+            failed |= !ok;
+        }
+
+        Console.WriteLine(failed ? "CHECKPICS FAILED" : "checkpics passed");
+        return failed ? 1 : 0;
     }
 
     /// <summary>
