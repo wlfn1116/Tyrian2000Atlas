@@ -53,6 +53,7 @@ public sealed class AppSettings
     public bool ExpandedParallax { get; set; }         // Engaged sub-option: wider all-layer parallax sweep
     public bool MirrorLayers { get; set; } = true;     // Engaged sub-option: mirror layers past their side edges
     public bool TallStarfield { get; set; } = true;    // the build's rewritten starfield (either mode)
+    public bool IceBaseShots { get; set; } = true;     // the build's "Ice Base Shots" restore (either mode)
     public bool ShowScreenFilter { get; set; } = true;
     public bool ShowSmoothies { get; set; } = true; // retained JSON name: terrain smoothies
     // Nullable so an older settings file can inherit its former broad smoothie toggle.
@@ -86,6 +87,10 @@ public sealed class AppSettings
     public int SpritesColumns { get; set; }             // 0 = fit to the panel width
     public bool? SpritesCheckerboard { get; set; }      // null = never saved, defaults on
     public bool SpritesNumbers { get; set; }            // print each cell's sprite index on it
+    public int PictureZoom { get; set; }                // full-screen picture pane; 0 = fit to the pane
+    /// <summary>Show a picture in the palette the game loads it with, rather than the one the
+    /// sprite band's slider selects; null = never saved, and the game's own is the default.</summary>
+    public bool? PictureGamePalette { get; set; }
     /// <summary>Shop tables with the Engaged fork's post-load pass applied; null = never
     /// saved, and the fork's view is the default.</summary>
     public bool? ItemsFork { get; set; }

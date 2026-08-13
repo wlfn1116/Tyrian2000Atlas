@@ -91,6 +91,7 @@ public sealed unsafe partial class App
     private bool _expandedParallax;          // Engaged sub-option: wider all-layer parallax sweep (commit edd8118)
     private bool _mirrorLayers = true;       // Engaged sub-option: mirror layers past their side edges (commit 1f7ba83)
     private bool _tallStarfield = true;      // the Engaged build's rewritten starfield (either mode)
+    private bool _iceBaseShots = true;       // the build's "Ice Base Shots" restore, on there too (commit 37edcfa)
     private bool _showScreenFilter = true;   // event-44 hue/brightness filter
     private bool _showTerrainSmoothies = true; // lava/water/ice/blur
     private bool _showSpotlight = true;       // light-cone presentation
@@ -160,6 +161,7 @@ public sealed unsafe partial class App
         _expandedParallax = settings.ExpandedParallax;
         _mirrorLayers = settings.MirrorLayers;
         _tallStarfield = settings.TallStarfield;
+        _iceBaseShots = settings.IceBaseShots;
         if (cliPlayerX >= 0)   // --player x y: start in phantom-player mode at a fixed spot (testing)
         {
             _playerSimMode = true;
@@ -200,6 +202,8 @@ public sealed unsafe partial class App
         _sprCols = Math.Clamp(settings.SpritesColumns, 0, 40);
         _sprCheckerboard = settings.SpritesCheckerboard ?? true;
         _sprNumbers = settings.SpritesNumbers;
+        _picZoom = Math.Clamp(settings.PictureZoom, 0, 4);
+        _picOwnPalette = settings.PictureGamePalette ?? true;
         _enemyMotion = settings.EnemyMotion ?? true;
         _itemFork = settings.ItemsFork ?? true;
         if (settings.SpriteListWidth > 100f) _sprListW = settings.SpriteListWidth;
@@ -313,6 +317,7 @@ public sealed unsafe partial class App
         s.ExpandedParallax = _expandedParallax;
         s.MirrorLayers = _mirrorLayers;
         s.TallStarfield = _tallStarfield;
+        s.IceBaseShots = _iceBaseShots;
         s.ShowScreenFilter = _showScreenFilter;
         s.ShowSmoothies = _showTerrainSmoothies;
         s.ShowSpotlight = _showSpotlight;
@@ -344,6 +349,8 @@ public sealed unsafe partial class App
         s.SpritesColumns = _sprCols;
         s.SpritesCheckerboard = _sprCheckerboard;
         s.SpritesNumbers = _sprNumbers;
+        s.PictureZoom = _picZoom;
+        s.PictureGamePalette = _picOwnPalette;
         s.EnemyMotion = _enemyMotion;
         s.ItemsFork = _itemFork;
         s.AllEpisodes = _allEpisodes;
@@ -709,6 +716,7 @@ public sealed unsafe partial class App
                 ExpandedParallax = _engaged && _expandedParallax,   // Engaged-only sub-option
                 MirrorLayers = _engaged && _mirrorLayers,           // Engaged-only sub-option (draw-only)
                 TallStarfield = _tallStarfield,                        // available in both modes
+                IceBaseShots = _iceBaseShots,                          // available in both modes
                 ShowScreenFilter = _showScreenFilter,
                 ShowTerrainSmoothies = _showTerrainSmoothies,
                 ShowSpotlight = _showSpotlight,
@@ -2374,22 +2382,25 @@ public sealed unsafe partial class App
         // Presets. Each is lit while the current flags already match it, so the row doubles
         // as a readout of which build you are watching.
         float w = (_hudW - 10f) / 3f;
-        bool vanillaNow = !_engaged && !_tallStarfield;
-        bool engagedNow = _engaged && !_expandedParallax && _mirrorLayers && _tallStarfield;
+        bool vanillaNow = !_engaged && !_tallStarfield && !_iceBaseShots;
+        bool engagedNow = _engaged && !_expandedParallax && _mirrorLayers && _tallStarfield &&
+                          _iceBaseShots;
         bool cleanNow = FxLayerCount() == 0;
 
         if (Chip("Vanilla", vanillaNow, AcSim, w,
-                "The DOS game exactly: 264px playfield and the original starfield.\n" +
-                "With these two off, playback is byte-for-byte the original.", true))
-        { _tallStarfield = false; SetEngaged(false); }
+                "The DOS game exactly: 264px playfield, the original starfield and\n" +
+                "the ice bases left dormant. With those off, playback is\n" +
+                "byte-for-byte the original.", true))
+        { _tallStarfield = _iceBaseShots = false; SetEngaged(false); }
         ImGui.SameLine(0, 5);
         if (Chip("Engaged", engagedNow, AcBuild, w,
-                "The Engaged build: 299px playfield, mirrored layers and the\n" +
-                "rewritten full-height starfield. Extra parallax is left off --\n" +
-                "it re-spaces every layer, so it is opt-in from ENGINE BUILD.", true))
+                "The Engaged build as it ships: 299px playfield, mirrored layers,\n" +
+                "the rewritten full-height starfield and ice base shots. Extra\n" +
+                "parallax is left off -- it re-spaces every layer, and it is off in\n" +
+                "the build too, so it is opt-in from ENGINE BUILD.", true))
         {
             _expandedParallax = false;
-            _mirrorLayers = _tallStarfield = true;
+            _mirrorLayers = _tallStarfield = _iceBaseShots = true;
             SetEngaged(true);
         }
         ImGui.SameLine(0, 5);
@@ -2463,8 +2474,8 @@ public sealed unsafe partial class App
         { _simFire = !_simFire; BuildPlayback(); }
     }
 
-    /// <summary>Which engine the playback is: playfield width and the Engaged build's
-    /// three enhancements. Everything here except mirroring changes the simulation.</summary>
+    /// <summary>Which engine the playback is: playfield width and the Engaged build's four
+    /// enhancements. Everything here except mirroring changes the simulation.</summary>
     private void DrawBuildSection(GameSim sim)
     {
         float w = (_hudW - 5f) / 2f;
@@ -2487,11 +2498,28 @@ public sealed unsafe partial class App
                 "to the full screen width, recycling above the top instead of\n" +
                 "popping in. Off = vanilla's 100 stars on a 16-bit position, which\n" +
                 "stop 7 rows short of the bottom and jump sideways as they wrap.\n" +
-                "Works in vanilla mode too -- the only enhancement that does, so\n" +
-                "leaving it on is the one way vanilla playback is not byte-for-byte.\n" +
-                "The two seed different counts from the level RNG, so spawns shift\n" +
-                "-- as they do between the real builds.", true))
+                "Works in vanilla mode too, so leaving it on is what stops vanilla\n" +
+                "playback being byte-for-byte on every level (ice base shots is the\n" +
+                "other, on two). The two starfields seed different counts from the\n" +
+                "level RNG, so spawns shift -- as they do between the real builds.", true))
         { _tallStarfield = !_tallStarfield; BuildPlayback(); }
+
+        // Also not an Engaged sub-option: a data restore rather than a widescreen one, and
+        // the build has it on by default. Full width because it is the one chip here whose
+        // label does not survive being halved.
+        if (Chip("ice base shots", _iceBaseShots, AcBuild, _hudW,
+                "Engaged build's Ice Base Shots (Setup > Enhancements > Game Tweaks,\n" +
+                "on there by default): wake the dormant dispenser bases. The 2x2 orb\n" +
+                "base ships with a full 17-frame hatch open/close animation and\n" +
+                "nothing in any level that can ever trigger it -- no turrets, no\n" +
+                "launcher, no arming event. This gives it the cadence of the working\n" +
+                "single-tile hatch beside it, and on the frame the hatch stands open\n" +
+                "the eye fires a player-aimed round while the orb below discharges a\n" +
+                "four-segment lightning bolt straight down.\n" +
+                "Only two levels place that base -- CAMANIS (twice) and ICESECRET,\n" +
+                "the secret Camanis research base (sixteen times). Everywhere else\n" +
+                "this changes nothing at all, not even the RNG.", true))
+        { _iceBaseShots = !_iceBaseShots; BuildPlayback(); }
 
         // The remaining two are Engaged-only: shown disabled rather than hidden, so the
         // build's full feature set stays visible from vanilla mode.

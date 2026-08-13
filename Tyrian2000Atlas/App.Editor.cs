@@ -2,6 +2,7 @@ using System.Numerics;
 using Hexa.NET.ImGui;
 using T2A.Render;
 using T2A.Tyrian;
+using T2A.Tyrian.Audio;
 
 namespace T2A;
 
@@ -546,6 +547,36 @@ public sealed unsafe partial class App
         UiTextClip(note, noteCol, ImGui.GetContentRegionAvail().X);
         if (ImGui.IsItemHovered() && note.Length > 0) ImGui.SetTooltip(note);
         WellEnd();
+    }
+
+    /// <summary>A 1..41 song picker labelled with the music.mus titles, shared by every
+    /// place the editor asks for a song number. A non-null zeroLabel adds the 0 row the
+    /// "keep current music" fields accept.</summary>
+    private static bool SongCombo(string label, ref int song, float width = 250f,
+        string tip = "", string? zeroLabel = null)
+    {
+        ImGui.SetNextItemWidth(width);
+        string current = song >= 1 && song <= MusicBank.Titles.Length
+            ? $"{song}  {MusicBank.Titles[song - 1]}"
+            : song == 0 && zeroLabel != null ? $"0  {zeroLabel}" : $"{song}  ?";
+        bool ch = false;
+        if (ImGui.BeginCombo(label, current))
+        {
+            if (zeroLabel != null && ImGui.Selectable($"0  {zeroLabel}", song == 0))
+            {
+                song = 0;
+                ch = true;
+            }
+            for (int i = 1; i <= MusicBank.Titles.Length; i++)
+                if (ImGui.Selectable($"{i}  {MusicBank.Titles[i - 1]}", i == song))
+                {
+                    song = i;
+                    ch = true;
+                }
+            ImGui.EndCombo();
+        }
+        if (ImGui.IsItemHovered() && tip.Length > 0) ImGui.SetTooltip(tip);
+        return ch;
     }
 
     private static EnemyDat[] CloneEnemyTable(EnemyDat[] source)
@@ -1126,8 +1157,7 @@ public sealed unsafe partial class App
         fixed (byte* p = _edNewNameBuf)
             ImGui.InputText("name (9 chars)", p, 10);
         ImGui.SameLine(0, 14f);
-        ImGui.SetNextItemWidth(110f);
-        ImGui.InputInt("song", ref _edNewSong);
+        SongCombo("song", ref _edNewSong, 190f);
         _edNewSong = Math.Clamp(_edNewSong, 1, 41);
         ImGui.SameLine(0, 14f);
         ImGui.Checkbox("create script entry", ref _edNewScriptEntry);
@@ -1429,7 +1459,7 @@ public sealed unsafe partial class App
     {
         UiSection("Random enemies", AcEdit, $"{lv.LevelEnemy.Count}/{EditableLevel.MaxLevelEnemies}");
         ImGui.TextWrapped("The pool the engine spawns from on its own clock. Events 13/14 gate it; " +
-            "event 37 sets the rate. These are ground-band spawns.");
+            "event 37 sets the rate. These spawn on the sky band.");
         ImGui.Dummy(new Vector2(0, 2));
         int removeAt = -1;
         for (int i = 0; i < lv.LevelEnemy.Count; i++)

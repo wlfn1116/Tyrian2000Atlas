@@ -35,7 +35,7 @@ public sealed unsafe partial class App
     private static string PicLabel(int pic) => pic switch
     {
         < 0 => "keep what is on screen",
-        0 => "ship-editor PCX",
+        0 => "tshp2.pcx",
         <= 14 => $"picture {pic}  (palette {PicFile.PaletteFor(pic)})",
         > 900 => $"clear to palette {PicFile.PaletteFor(pic - 900)}",
         _ => $"picture {pic}",

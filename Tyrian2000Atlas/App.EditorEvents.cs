@@ -2,6 +2,7 @@ using System.Numerics;
 using Hexa.NET.ImGui;
 using T2A.Render;
 using T2A.Tyrian;
+using T2A.Tyrian.Audio;
 
 namespace T2A;
 
@@ -275,20 +276,21 @@ public sealed unsafe partial class App
         ImGui.SetNextItemWidth(280);
         if (ImGui.BeginCombo("type", $"{ev.Type}  {info.Name}"))
         {
-            EventGroup? lastGroup = null;
-            foreach (var e in EventCatalog.All)
+            // One heading per group, every type of that group under it (the catalog is
+            // ordered by number, so a single pass would repeat the headings).
+            foreach (EventGroup g in Enum.GetValues<EventGroup>())
             {
-                if (e.Group != lastGroup)
+                ImGui.SeparatorText(EventCatalog.GroupName(g));
+                foreach (var e in EventCatalog.All)
                 {
-                    lastGroup = e.Group;
-                    ImGui.SeparatorText(EventCatalog.GroupName(e.Group));
+                    if (e.Group != g) continue;
+                    if (ImGui.Selectable($"{e.Type}  {e.Name}", e.Type == ev.Type))
+                    {
+                        ev.Type = e.Type;
+                        changed = true;
+                    }
+                    if (ImGui.IsItemHovered() && e.Summary.Length > 0) ImGui.SetTooltip(e.Summary);
                 }
-                if (ImGui.Selectable($"{e.Type}  {e.Name}", e.Type == ev.Type))
-                {
-                    ev.Type = e.Type;
-                    changed = true;
-                }
-                if (ImGui.IsItemHovered() && e.Summary.Length > 0) ImGui.SetTooltip(e.Summary);
             }
             ImGui.EndCombo();
         }
@@ -303,13 +305,14 @@ public sealed unsafe partial class App
         ImGui.Dummy(new Vector2(0, 4));
 
         // --- the six dat fields, named ---
-        changed |= DatField("dat", info.Dat, ref ev.Dat);
+        changed |= DatField("dat", info.Dat, ref ev.Dat, FieldChoices(ev.Type, 0));
         SpawnHelpers(ep, lv, ref ev, ref changed);
-        changed |= DatField("dat2", info.Dat2, ref ev.Dat2);
-        changed |= DatFieldS8("dat3", info.Dat3, ref ev.Dat3);
+        AudioHelpers(ev);
+        changed |= DatField("dat2", info.Dat2, ref ev.Dat2, FieldChoices(ev.Type, 1));
+        changed |= DatFieldS8("dat3", info.Dat3, ref ev.Dat3, FieldChoices(ev.Type, 2));
         changed |= DatFieldU8("dat4", info.Dat4, ref ev.Dat4);
-        changed |= DatFieldS8("dat5", info.Dat5, ref ev.Dat5);
-        changed |= DatFieldS8("dat6", info.Dat6, ref ev.Dat6);
+        changed |= DatFieldS8("dat5", info.Dat5, ref ev.Dat5, FieldChoices(ev.Type, 4));
+        changed |= DatFieldS8("dat6", info.Dat6, ref ev.Dat6, FieldChoices(ev.Type, 5));
 
         if (changed)
         {
@@ -322,22 +325,50 @@ public sealed unsafe partial class App
         DrawEnemyPickPopup(ep, lv);
     }
 
-    private bool DatField(string raw, EventField f, ref short value)
+    private bool DatField(string raw, EventField f, ref short value,
+        IReadOnlyList<(int Value, string Label)>? choices = null)
     {
         int v = value;
+        bool ch = choices != null ? DatCombo(raw, f, ref v, choices) : DatInput(raw, f, ref v);
+        if (ch) value = (short)Math.Clamp(v, short.MinValue, short.MaxValue);
+        return ch;
+    }
+
+    private bool DatFieldS8(string raw, EventField f, ref sbyte value,
+        IReadOnlyList<(int Value, string Label)>? choices = null)
+    {
+        int v = value;
+        bool ch = choices != null ? DatCombo(raw, f, ref v, choices) : DatInput(raw, f, ref v);
+        if (ch) value = (sbyte)Math.Clamp(v, sbyte.MinValue, sbyte.MaxValue);
+        return ch;
+    }
+
+    private bool DatInput(string raw, EventField f, ref int v)
+    {
         ImGui.SetNextItemWidth(120);
         bool ch = ImGui.InputInt(f.Used ? $"{f.LabelText}##{raw}" : $"{raw} (unused)", ref v);
-        if (ch) value = (short)Math.Clamp(v, short.MinValue, short.MaxValue);
         if (ImGui.IsItemHovered() && f.HintText.Length > 0) ImGui.SetTooltip(f.HintText);
         return ch;
     }
 
-    private bool DatFieldS8(string raw, EventField f, ref sbyte value)
+    /// <summary>A dat field whose whole vocabulary the engine fixes, rendered as a combo of
+    /// "value  name" rows. A value outside the domain still shows (and survives) so no
+    /// record is ever uneditable.</summary>
+    private bool DatCombo(string raw, EventField f, ref int v,
+        IReadOnlyList<(int Value, string Label)> choices)
     {
-        int v = value;
-        ImGui.SetNextItemWidth(120);
-        bool ch = ImGui.InputInt(f.Used ? $"{f.LabelText}##{raw}" : $"{raw} (unused)", ref v);
-        if (ch) value = (sbyte)Math.Clamp(v, sbyte.MinValue, sbyte.MaxValue);
+        string? current = null;
+        foreach (var (val, name) in choices)
+            if (val == v) { current = name; break; }
+        ImGui.SetNextItemWidth(280);
+        bool ch = false;
+        if (ImGui.BeginCombo(f.Used ? $"{f.LabelText}##{raw}" : $"{raw} (unused)",
+                $"{v}  {current ?? "(not a named value)"}"))
+        {
+            foreach (var (val, name) in choices)
+                if (ImGui.Selectable($"{val}  {name}", val == v)) { v = val; ch = true; }
+            ImGui.EndCombo();
+        }
         if (ImGui.IsItemHovered() && f.HintText.Length > 0) ImGui.SetTooltip(f.HintText);
         return ch;
     }
@@ -350,6 +381,98 @@ public sealed unsafe partial class App
         if (ch) value = (byte)Math.Clamp(v, 0, 255);
         if (ImGui.IsItemHovered() && f.HintText.Length > 0) ImGui.SetTooltip(f.HintText);
         return ch;
+    }
+
+    // =====================================================================
+    // Named field domains
+    // =====================================================================
+
+    private (int, string)[]? _evSpecialChoices;
+    private ItemData? _evSpecialChoicesFor;
+    private (int, string)[]? _evTextChoices;
+    private string _evTextChoicesFor = "\0";   // never a real data dir, so the first ask loads
+
+    /// <summary>The catalog's fixed vocabularies, plus the two only data can name: the
+    /// special-weapon table (event 82) and the nine event-16 text windows in tyrian.hdt.</summary>
+    private IReadOnlyList<(int Value, string Label)>? FieldChoices(byte type, int field)
+    {
+        if (type == 82 && field == 0)
+            return SpecialChoices() ?? EventCatalog.FieldChoices(type, field);
+        if (type == 16 && field == 0)
+            return EventTextChoices() ?? EventCatalog.FieldChoices(type, field);
+        return EventCatalog.FieldChoices(type, field);
+    }
+
+    /// <summary>Special weapons by name, from the same item data the Items browser reads.</summary>
+    private IReadOnlyList<(int Value, string Label)>? SpecialChoices()
+    {
+        var info = EditorEpisodeInfo;
+        if (_gd == null || info == null) return null;
+        var items = _gd.GetItems(info, _itemFork);
+        if (!items.Loaded) return null;
+        if (!ReferenceEquals(items, _evSpecialChoicesFor))
+        {
+            var list = new List<(int, string)> { (0, "(none)") };
+            for (int i = 1; i < items.Specials.Length; i++)
+            {
+                string n = items.Specials[i]?.Name.Trim() ?? "";
+                if (n.Length > 0) list.Add((i, n));
+            }
+            _evSpecialChoices = list.ToArray();
+            _evSpecialChoicesFor = items;
+        }
+        return _evSpecialChoices;
+    }
+
+    /// <summary>The nine text-window lines event 16 shows, straight out of tyrian.hdt.
+    /// Falls back to the announcer transcripts when the file is unreadable.</summary>
+    private IReadOnlyList<(int Value, string Label)>? EventTextChoices()
+    {
+        if (_evTextChoicesFor != _dataDir)
+        {
+            _evTextChoicesFor = _dataDir;
+            _evTextChoices = null;
+            var texts = EventTexts.Load(_dataDir);
+            if (texts.Count == 10)
+            {
+                var c = new (int, string)[9];
+                for (int i = 1; i <= 9; i++)
+                {
+                    string t = texts[i].Replace("~", "");   // ~ = the engine's highlight mark
+                    c[i - 1] = (i, t.Length > 0 ? t : SoundBank.VoiceLines[i - 1]);
+                }
+                _evTextChoices = c;
+            }
+        }
+        return _evTextChoices;
+    }
+
+    /// <summary>The audio events earn a preview: the exact clip the engine would queue,
+    /// or a jump into the music window for a song.</summary>
+    private void AudioHelpers(in EventRec ev)
+    {
+        if (ev.Type == 62)
+        {
+            ImGui.SameLine(0, 10);
+            if (UiButton("listen", AcEdit, "Play this sample.", 0f,
+                    ev.Dat < 1 || ev.Dat > SoundBank.SfxCount))
+                _audio?.PlaySound(ev.Dat, 0, 4);
+        }
+        else if (ev.Type == 16)
+        {
+            ImGui.SameLine(0, 10);
+            if (UiButton("listen", AcEdit,
+                    "Play the announcer line this text window queues.", 0f,
+                    ev.Dat is < 1 or > 9))
+                _audio?.PlaySound(SoundBank.WindowTextSamples[ev.Dat - 1], 3, 4);
+        }
+        else if (ev.Type == 35)
+        {
+            ImGui.SameLine(0, 10);
+            if (UiButton("open in player", AcMusic,
+                    "Open this song in the music window.", 0f, ev.Dat < 1 || ev.Dat > 41))
+                OpenTrack(ev.Dat - 1);
+        }
     }
 
     /// <summary>The conveniences a spawn event earns: enemy picker, X presets, map jump.</summary>

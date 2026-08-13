@@ -120,10 +120,10 @@ public static class EventCatalog
             {
                 Type = 5, Name = "Load shape banks", Group = EventGroup.Spawn,
                 Summary = "Loads up to four enemy sprite banks into the level's slots.",
-                Dat = new("slot 1 bank", "enemy shape bank 1..36 (0 = keep current)"),
-                Dat2 = new("slot 2 bank", "0 = keep current"),
-                Dat3 = new("slot 3 bank", "0 = keep current"),
-                Dat4 = new("slot 4 bank", "0 = keep current"),
+                Dat = new("slot 1 bank", "enemy shape bank 1..36 (0 = unload the slot)"),
+                Dat2 = new("slot 2 bank", "0 = unload"),
+                Dat3 = new("slot 3 bank", "0 = unload"),
+                Dat4 = new("slot 4 bank", "0 = unload"),
             },
             new() { Type = 6, Name = "Spawn ground enemy", Group = EventGroup.Spawn,
                 Summary = "Creates one enemy on the ground band (25)." },
@@ -160,9 +160,9 @@ public static class EventCatalog
                 Summary = "Creates one enemy on the sky band (0)." },
             new()
             {
-                Type = 16, Name = "Voice announcement", Group = EventGroup.Audio,
-                Summary = "Plays one of the nine announcer lines.",
-                Dat = new("line", "1..9: Enemy approaching / Large enemy / Boss / Warning ..."),
+                Type = 16, Name = "Text window + voice", Group = EventGroup.Audio,
+                Summary = "Shows one of the nine text windows and queues its announcer line.",
+                Dat = new("line", "1..9, indexing the event-text block in tyrian.hdt"),
             },
             new() { Type = 17, Name = "Spawn ground enemy from bottom", Group = EventGroup.Spawn,
                 Summary = "Ground-band enemy entering from the bottom edge (y 190)." },
@@ -174,7 +174,7 @@ public static class EventCatalog
                 Summary = "Rewrites velocity for enemies by link number or slot range.",
                 Dat = new("x-vel", "-99 = keep"),
                 Dat2 = new("y-vel", "-99 = keep"),
-                Dat3 = new("range", "0 = by link; 2 = slots 0-24, 1 = 25-49, 3 = 50-74, 99 = all; 80..89 = link from PL slot"),
+                Dat3 = new("range", "0 = by link; 2 = sky slots 0-24, 1 = ground 25-49, 3 = top 50-74, 99 = all; 80..89 = link from PL slot"),
                 Dat4 = new("link", "link number (with range 0)"),
                 Dat5 = new("cycle", "> 0: set animation frame"),
                 Dat6 = new("fixed y move", "0 = keep, -99 = clear"),
@@ -253,7 +253,7 @@ public static class EventCatalog
             {
                 Type = 33, Name = "Enemy-die spawn", Group = EventGroup.Enemies,
                 Summary = "When the linked enemies die, they turn into this entry.",
-                Dat = new("enemy id", "entry spawned on death (533 = random powerup roll)"),
+                Dat = new("enemy id", "entry spawned on death (533 = random powerup roll,\n534 = Super Tyrian special)"),
                 Dat4 = new("link", "link number addressed"),
             },
             new() { Type = 34, Name = "Music fade", Group = EventGroup.Audio,
@@ -270,7 +270,8 @@ public static class EventCatalog
             {
                 Type = 37, Name = "Random enemy rate", Group = EventGroup.Spawn,
                 Summary = "How often the levelEnemy list spawns (smaller = denser).",
-                Dat = new("frequency", "frames between random spawns (default 96)"),
+                Dat = new("frequency", "0..99 spawn gate, rolled every tick: chance = 99 - value %.\n" +
+                    "Default 96 = ~3% per tick; 99+ = never."),
             },
             new()
             {
@@ -291,7 +292,7 @@ public static class EventCatalog
             {
                 Type = 41, Name = "Clear enemies", Group = EventGroup.Enemies,
                 Summary = "Removes enemies without explosions.",
-                Dat = new("which", "0 = every slot, 1 = ground slots 0..24 only"),
+                Dat = new("which", "0 = every slot, else sky slots 0..24 only"),
             },
             new() { Type = 42, Name = "BG3 under sky enemies", Group = EventGroup.Backdrop,
                 Summary = "Cloud layer over ground but under sky enemies (background3over = 2)." },
@@ -324,7 +325,8 @@ public static class EventCatalog
                 Type = 46, Name = "Difficulty shift", Group = EventGroup.Flow,
                 Summary = "Nudges the live difficulty level up or down.",
                 Dat = new("delta", "added to difficulty (clamped 1..10)"),
-                Dat2 = new("filter", "0 = always; 1 applies only in 1-player full-game"),
+                Dat2 = new("filter", "0 = always; else only in 2-player / arcade modes"),
+                Dat3 = new("damage cap", "0 = keep; else sets damageRate, the cap on ram-collision damage"),
             },
             new()
             {
@@ -376,7 +378,7 @@ public static class EventCatalog
             {
                 Type = 54, Name = "Jump time", Group = EventGroup.Flow,
                 Summary = "Jumps the event clock to a target time (boss loops jump backwards).",
-                Dat = new("target time", ""),
+                Dat = new("target time", "-1 = return to just after the previous jump (returnLoc)"),
             },
             new()
             {
@@ -464,7 +466,7 @@ public static class EventCatalog
                 Summary = "Starts/stops the countdown; expiry jumps the event clock.",
                 Dat = new("on", "1 = start, 0 = stop"),
                 Dat2 = new("target time", "event-time jumped to at zero"),
-                Dat3 = new("seconds", "countdown length"),
+                Dat3 = new("countdown", "x100 game ticks (about 2.9 s each at 35 fps)"),
             },
             new()
             {
@@ -520,7 +522,8 @@ public static class EventCatalog
             new()
             {
                 Type = 75, Name = "Random link pick", Group = EventGroup.Flow,
-                Summary = "Stores a random live link from a range into a PL slot (80..89).",
+                Summary = "Stores a random live link from a range into a PL slot (80..89). " +
+                          "Only enemies with zero Y velocity are candidates.",
                 Dat = new("link from", ""),
                 Dat2 = new("link to", ""),
                 Dat3 = new("slot", "80..89"),
@@ -575,7 +578,7 @@ public static class EventCatalog
                 Summary = "Event 67, applied only in Timed Battle mode.",
                 Dat = new("on", "1 = start"),
                 Dat2 = new("target time", ""),
-                Dat3 = new("seconds", ""),
+                Dat3 = new("countdown", "x100 game ticks (about 2.9 s each at 35 fps)"),
             },
             new()
             {
@@ -617,6 +620,124 @@ public static class EventCatalog
     /// <summary>Types that create an object (for the editor's spawn niceties).</summary>
     public static bool IsSpawnType(byte type) => ObjectPlacer.IsSpawn(type, out _, out _);
 
+    // =====================================================================
+    // Named domains
+    // =====================================================================
+
+    /// <summary>The engine's nine screen "smoothies" (event 64). Indices 7 and 8 are read
+    /// into the array but no draw pass ever tests them.</summary>
+    public static readonly string[] SmoothieNames =
+    {
+        "lava heat-waver (data 0 = under ground enemies)",
+        "water ripple (also syncs BG2 X to BG1)",
+        "iced blur, mid-stack",
+        "plain blur",
+        "iced blur, early (shares data with 3)",
+        "spotlight cone",
+        "(engine never reads it)",
+        "(engine never reads it)",
+        "screen flip + inverted controls",
+    };
+
+    private static readonly (int, string)[] OnOff = { (0, "off"), (1, "on") };
+    private static readonly (int, string)[] Bands =
+        { (0, "ground band"), (1, "ground band (alt)"), (2, "sky band"), (3, "top band") };
+    private static readonly (int, string)[] BlockBands =
+    {
+        (0, "ground band"), (1, "ground band (alt)"), (2, "sky band"),
+        (3, "top band"), (4, "second ground band"),
+    };
+    private static readonly (int, string)[] EndModes =
+        { (0, "fly-off animation"), (1, "instant") };
+    private static readonly (int, string)[] AniModes =
+        { (0, "loop"), (1, "play once and stop"), (2, "animate when firing") };
+    private static readonly (int, string)[] ClearWhich =
+        { (0, "every slot"), (1, "sky slots 0-24 only") };
+    private static readonly (int, string)[] Bg2Modes =
+    {
+        (0, "early (under everything)"), (1, "over ground band"),
+        (2, "frontmost"), (3, "early (alt)"),
+    };
+    private static readonly (int, string)[] FilterModes = { (0, "off"), (1, "on"), (2, "fade") };
+    private static readonly (int, string)[] ShiftFilters =
+        { (0, "always"), (1, "2-player / arcade only") };
+    private static readonly (int, string)[] ForcedModes = { (0, "on"), (99, "off") };
+    private static readonly (int, string)[] FlagSets =
+        { (0, "clear the flag"), (1, "set the flag") };
+    private static readonly (int, string)[] FlagValues = { (0, "false"), (1, "true") };
+    private static readonly (int, string)[] Bg3Locks = { (0, "locked to BG1"), (1, "free") };
+    private static readonly (int, string)[] TimerModes = { (0, "stop"), (1, "start") };
+
+    private static readonly (int, string)[] Songs = Numbered(Audio.MusicBank.Titles, 1);
+    private static readonly (int, string)[] Sounds =
+        Numbered(Audio.SoundBank.Titles[..Audio.SoundBank.SfxCount], 1);
+    private static readonly (int, string)[] Voices = Numbered(Audio.SoundBank.VoiceLines, 1);
+    private static readonly (int, string)[] Smoothies = Numbered(SmoothieNames, 1);
+    private static readonly (int, string)[] PlSlots = BuildPlSlots(withLinkField: true);
+    private static readonly (int, string)[] PlSlotsOnly = BuildPlSlots(withLinkField: false);
+    private static readonly (int, string)[] Ranges = BuildRanges();
+
+    private static (int, string)[] Numbered(string[] names, int firstValue)
+    {
+        var c = new (int, string)[names.Length];
+        for (int i = 0; i < names.Length; i++) c[i] = (firstValue + i, names[i]);
+        return c;
+    }
+
+    private static (int, string)[] BuildPlSlots(bool withLinkField)
+    {
+        var pl = new List<(int, string)>();
+        if (withLinkField) pl.Add((0, "use the link field"));
+        for (int s = 80; s <= 89; s++) pl.Add((s, $"link from PL slot {s}"));
+        return pl.ToArray();
+    }
+
+    private static (int, string)[] BuildRanges()
+    {
+        var r = new List<(int, string)>
+        {
+            (0, "by link number"), (2, "sky slots 0-24"), (1, "ground slots 25-49"),
+            (3, "top slots 50-74"), (99, "every enemy"),
+        };
+        for (int s = 80; s <= 89; s++) r.Add((s, $"link from PL slot {s}"));
+        return r.ToArray();
+    }
+
+    /// <summary>
+    /// The complete named domain of one dat field, or null when the field is a free number.
+    /// Only fields whose whole vocabulary the engine fixes get one — the editor renders
+    /// these as combos instead of raw numeric inputs. Field index 0..5 = dat1..dat6.
+    /// </summary>
+    public static IReadOnlyList<(int Value, string Label)>? FieldChoices(byte type, int field)
+        => (type, field) switch
+        {
+            (4 or 83, 0) => Bands,
+            (11, 0) => EndModes,
+            (12, 5) => BlockBands,
+            (16, 0) => Voices,
+            (19, 2) => Ranges,
+            (20 or 55, 2) => PlSlots,
+            (24, 2) => AniModes,
+            (26, 0) => OnOff,
+            (35, 0) => Songs,
+            (41, 0) => ClearWhich,
+            (43, 0) => Bg2Modes,
+            (44, 0) => FilterModes,
+            (46, 1) => ShiftFilters,
+            (53, 0) => ForcedModes,
+            (60, 1) => FlagSets,
+            (61, 1) => FlagValues,
+            (62, 0) => Sounds,
+            (64, 0) => Smoothies,
+            (65, 0) => Bg3Locks,
+            (67 or 84, 0) => TimerModes,
+            (72, 0) => OnOff,
+            (73, 0) => OnOff,
+            (75, 2) => PlSlotsOnly,
+            (99, 0) => OnOff,
+            _ => null,
+        };
+
     /// <summary>
     /// The short label a level-wide event carries when drawn as a line across the map —
     /// the moments that change what the whole level is doing. Null = not a flow event.
@@ -636,7 +757,7 @@ public static class EventCatalog
         54 => $"jump -> t{unchecked((ushort)ev.Dat)}",
         44 => ev.Dat == 0 ? "filter off" : "filter",
         53 => ev.Dat == 99 ? "forced events off" : "forced events",
-        67 => ev.Dat == 1 ? $"timer {ev.Dat3}s -> t{unchecked((ushort)ev.Dat2)}" : "timer off",
+        67 => ev.Dat == 1 ? $"timer {ev.Dat3}00t -> t{unchecked((ushort)ev.Dat2)}" : "timer off",
         77 => "map position set",
         _ => null,
     };

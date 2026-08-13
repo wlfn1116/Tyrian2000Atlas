@@ -56,12 +56,20 @@ public sealed unsafe partial class App
     };
 
     /// <summary>Open the browser on a bank by its position in the list -- the "--showsprites N"
-    /// entry point, which is how one particular bank gets framed for a screenshot.</summary>
+    /// entry point, which is how one particular bank gets framed for a screenshot. Indices past
+    /// the last bank carry on into the picture list, which is where that list is drawn.</summary>
     public void ShowSpriteBank(int listIndex)
     {
         var all = AllSpriteSources();
-        if (listIndex < 0 || listIndex >= all.Count) return;
-        OpenSprite(all[listIndex], -1);
+        if (listIndex < 0) return;
+        if (listIndex < all.Count) { OpenSprite(all[listIndex], -1); return; }
+
+        int pic = listIndex - all.Count;
+        if (pic >= AllPictureSources().Count) return;
+        _showSprites = true;
+        _picSelected = pic;
+        _sprSelected = -1;
+        _sprScrollBankList = true;
     }
 
     /// <summary>Open the browser on a particular sprite (the enemy browser links through here).</summary>
@@ -70,6 +78,7 @@ public sealed unsafe partial class App
         _showSprites = true;
         _sprSource = src;
         _sprSelected = index;
+        _picSelected = -1;
         _sprScrollBankList = true;
         _sprScrollGrid = index >= 0;
     }
@@ -95,7 +104,8 @@ public sealed unsafe partial class App
         ImGui.SameLine(0, 3);
 
         ImGui.BeginChild("sprmain", new Vector2(0, 0));
-        DrawSpriteSheet();
+        if (_picSelected >= 0) DrawPicturePane();
+        else DrawSpriteSheet();
         ImGui.EndChild();
 
         RefEnd(AcSprite);
@@ -106,7 +116,7 @@ public sealed unsafe partial class App
     {
         BandBegin("sprband", AcSprite);
 
-        UiFilter("##sprfilter", "filter banks", _sprFilter, 210f, AcSprite);
+        UiFilter("##sprfilter", "filter banks & pictures", _sprFilter, 210f, AcSprite);
 
         BandDivider();
         BandLabel("palette");
@@ -123,20 +133,23 @@ public sealed unsafe partial class App
 
         BandDivider();
         int banks = AllSpriteSources().Count;
+        int pictures = AllPictureSources().Count;
         bool windows = OperatingSystem.IsWindows();
         // The row stride is the one the grid strip sets, so a file out of here is the same file
         // "export sheet PNG" would have written for that bank.
         int allCols = _sprCols > 0 ? _sprCols : SheetDefaultCols;
         if (UiButton("export all sprites", AcSprite,
-                $"Write all {banks} banks as PNG sheets at 1:1, {allCols} sprites to a row, into\n" +
-                "one folder -- each named for the bank it came out of, replacing a file\n" +
-                "already there by that name. Decoded through the palette selected here.\n" +
-                "Takes about a second; the status line counts them off.",
+                $"Write all {banks} banks as PNG sheets at 1:1, {allCols} sprites to a row, and\n" +
+                $"all {pictures} pictures whole, into one folder -- each named for where it\n" +
+                "came from, replacing a file already there by that name. Banks are\n" +
+                "decoded through the palette selected here; a picture is decoded the\n" +
+                "way its own pane is. Takes about a second; the status line counts\n" +
+                "them off.",
                 0f, SpriteExportBusy || !windows) && windows)
             StartSpriteExportAll(_sprPalette, allCols);
 
         BandDivider();
-        BandNote($"{banks} banks in this data folder", UiFaint);
+        BandNote($"{banks} banks, {pictures} pictures in this data folder", UiFaint);
 
         BandEnd();
     }
@@ -158,15 +171,18 @@ public sealed unsafe partial class App
 
             foreach (var src in items)
             {
-                bool sel = src == _sprSource;
+                bool sel = _picSelected < 0 && src == _sprSource;
                 var box = UiRow($"##b{(int)src.Store}_{src.Index}_{src.Xmas}", sel, AcSprite, 30f);
-                if (box.Clicked) { _sprSource = src; _sprSelected = -1; }
+                if (box.Clicked) { _sprSource = src; _sprSelected = -1; _picSelected = -1; }
                 if (box.Hovered) ImGui.SetTooltip(src.Title);
                 RowText(box, 11f, src.ListTitle, src.ListNote, AcSprite, sel);
                 if (sel && _sprScrollBankList) ImGui.SetScrollHereY(0.5f);
             }
         }
-        if (!any) ImGui.TextDisabled("No bank matches that filter.");
+        // Last, and after the banks rather than among them: these are not sprite banks at all
+        // but whole 320x200 paintings, and the pane they open is a different pane.
+        any |= DrawPictureList(filter);
+        if (!any) ImGui.TextDisabled("Nothing matches that filter.");
         _sprScrollBankList = false;
     }
 

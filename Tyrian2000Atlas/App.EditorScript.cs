@@ -399,9 +399,12 @@ public sealed unsafe partial class App
                 ch = true;
             }
         ImGui.SameLine(0, 14);
-        ImGui.SetNextItemWidth(100);
         int song = s.Song;
-        if (ImGui.InputInt("song (1-41)", ref song)) { s.Song = Math.Clamp(song, 1, 41); ch = true; }
+        if (SongCombo("song", ref song, 220f, "]L song field - 1..41, music.mus index."))
+        {
+            s.Song = Math.Clamp(song, 1, 41);
+            ch = true;
+        }
 
         ch |= ImGui.Checkbox("save point", ref s.SavePoint);
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("]s - dying after this sends the player back here.");
@@ -536,10 +539,13 @@ public sealed unsafe partial class App
             return ch;
         }
 
-        ImGui.SetNextItemWidth(100);
         int osong = s.OutpostSong;
-        if (ImGui.InputInt("shop song", ref osong)) { s.OutpostSong = Math.Clamp(osong, 0, 41); ch = true; }
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("]i - the music the shop plays. Stock outposts use 2.");
+        if (SongCombo("shop song", ref osong, 220f,
+                "]i - the music the shop plays. Stock outposts use 2.", zeroLabel: "(keep current)"))
+        {
+            s.OutpostSong = Math.Clamp(osong, 0, 41);
+            ch = true;
+        }
         ImGui.SameLine(0, 14);
         ch |= DrawPlanetPicker(s);
 
@@ -830,10 +836,13 @@ public sealed unsafe partial class App
         if (end.Anim)
         {
             ImGui.SameLine(0, 12);
-            ImGui.SetNextItemWidth(100);
             int am = end.AnimMusic;
-            if (ImGui.InputInt("anim song", ref am)) { end.AnimMusic = Math.Clamp(am, 0, 41); ch = true; }
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Started just before the animation; 0 = keep. Stock uses 9.");
+            if (SongCombo("anim song", ref am, 220f,
+                    "Started just before the animation. Stock uses 9.", zeroLabel: "(keep playing)"))
+            {
+                end.AnimMusic = Math.Clamp(am, 0, 41);
+                ch = true;
+            }
         }
 
         ImGui.Dummy(new Vector2(0, 4));
@@ -910,10 +919,13 @@ public sealed unsafe partial class App
             }
 
         UiSection("The score screen's dress", AcRoutes);
-        ImGui.SetNextItemWidth(100);
         int hm = end.HintMusic;
-        if (ImGui.InputInt("song (0 = keep)", ref hm)) { end.HintMusic = Math.Clamp(hm, 0, 41); ch = true; }
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Stock endings play 31 here.");
+        if (SongCombo("song", ref hm, 220f, "Stock endings play 31 here.",
+                zeroLabel: "(keep playing)"))
+        {
+            end.HintMusic = Math.Clamp(hm, 0, 41);
+            ch = true;
+        }
         ImGui.SameLine(0, 12);
         ImGui.SetNextItemWidth(180);
         if (ImGui.BeginCombo("backdrop", PicLabel(end.HintPic)))
@@ -1000,9 +1012,8 @@ public sealed unsafe partial class App
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("click to edit the arena's 9-char name");
             }
             ImGui.SameLine(0, 8);
-            ImGui.SetNextItemWidth(90);
             int song = a.Song;
-            if (ImGui.InputInt("song", ref song)) { a.Song = Math.Clamp(song, 1, 41); ch = true; }
+            if (SongCombo("song", ref song, 200f)) { a.Song = Math.Clamp(song, 1, 41); ch = true; }
             ImGui.SameLine(0, 8);
             if (UiButton("x", AcEnemy, "remove this arena", 26f)) kill = i;
             ImGui.PopID();
@@ -1202,9 +1213,7 @@ public sealed unsafe partial class App
         ch |= ImGui.InputInt("level file", ref file);
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip($"1-based section of tyrian{ep.Number}.lvl - the Levels tab's numbering.");
-        ImGui.SetNextItemWidth(110);
-        ch |= ImGui.InputInt("song", ref song);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("1..41, music.mus index.");
+        ch |= SongCombo("song", ref song, 250f, "1..41, music.mus index.");
         ImGui.SetNextItemWidth(110);
         ch |= ImGui.InputInt("next section", ref next);
         if (ImGui.IsItemHovered())
@@ -1259,7 +1268,7 @@ public sealed unsafe partial class App
         'Q' => "]Q - END OF EPISODE: shows score + one of the NINE '#'-blocks that must follow, then hands over to the next episode.",
         'A' => "]A - play the ending animation (tyrend.anm).",
         'W' => "]W(y/n) RS - text screen until a '#' line: y = WARNING bars, R = red alert digit, S = type-in speed. Max 12 lines of 60 chars.",
-        'P' => "]P n - backdrop: 0 = ship-editor PCX, 1..14 = tyrian.pic picture (fade in), 901+ = clear to a palette.",
+        'P' => "]P n - backdrop: 0 = tshp2.pcx, 1..14 = tyrian.pic picture (fade in), 901+ = clear to a palette.",
         'U' => "]U n - picture n wipes in upward.",
         'V' => "]V n - picture n wipes in downward.",
         'R' => "]R n - picture n wipes in rightward.",
@@ -1298,8 +1307,8 @@ public sealed unsafe partial class App
             ("]W(y/n) RS", "a text screen, lines until a '#'. y = flashing WARNING bars and\n" +
                         "siren; R (tens) = red-alert mode; S (ones) = per-character glow\n" +
                         "delay. The engine holds 12 lines of 60 characters."),
-            ("]P ]U ]V ]R", "backdrops from tyrian.pic: ]P fades picture n in (0 = ship-editor\n" +
-                        "PCX, 901+ = clear to palette n-900); ]U/]V/]R wipe it in\nup / down / rightward."),
+            ("]P ]U ]V ]R", "backdrops from tyrian.pic: ]P fades picture n in (0 = the loose\n" +
+                        "tshp2.pcx, 901+ = clear to palette n-900); ]U/]V/]R wipe it in\nup / down / rightward."),
             ("]C ]B ]F", "transitions: fade + dark palette / fade to black / white flash."),
             ("]M n", "play song n. ]@ toggles the alternate text colour bank."),
             ("]n", "re-enable text screens after an ESC skip."),

@@ -204,6 +204,45 @@ public sealed class GameData
         }
     }
 
+    private string[]? _pcxNames;
+    private readonly Dictionary<string, PcxImage?> _pcxCache = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Every loose .pcx beside the data, by file name. The engine only ever loads one of them
+    /// — tshp2.pcx, the "]P 0" backdrop (tyrian2.c:4483) — but the folder is listed rather than
+    /// that one name hard-coded, so shipedit.pcx and anything else shipped alongside shows up.
+    /// </summary>
+    public IReadOnlyList<string> PcxNames
+    {
+        get
+        {
+            if (_pcxNames != null) return _pcxNames;
+            try
+            {
+                _pcxNames = Directory.EnumerateFiles(DataDir, "*.pcx")
+                    .Select(Path.GetFileName)
+                    .Where(n => !string.IsNullOrEmpty(n))
+                    .Select(n => n!)
+                    .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+            }
+            catch { _pcxNames = Array.Empty<string>(); }
+            return _pcxNames;
+        }
+    }
+
+    /// <summary>One loose .pcx decoded, cached; null when it is missing or in a form
+    /// <see cref="PcxImage"/> will not read.</summary>
+    public PcxImage? GetPcx(string name)
+    {
+        if (_pcxCache.TryGetValue(name, out var hit)) return hit;
+        PcxImage? img;
+        try { img = PcxImage.Load(Path.Combine(DataDir, name)); }
+        catch { img = null; }
+        _pcxCache[name] = img;
+        return img;
+    }
+
     /// <summary>
     /// The Christmas shape file. Xmas mode is a wholesale swap of tyrian.shp for tyrianc.shp
     /// (opentyr.c:281) — same 13 sub-tables, different art — so it is the same structure read
