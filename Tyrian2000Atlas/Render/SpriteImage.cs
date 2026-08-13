@@ -17,9 +17,17 @@ public sealed unsafe class SpriteImage : IDisposable
 
     private SdlNs.SDLTexturePtr _tex;
     private bool _created;
+    private nint _rendererHandle;
+
+    /// <summary>The renderer the current texture belongs to. SDL textures are per-renderer,
+    /// so a window that migrates to the detached host must re-upload — the caller compares
+    /// this against the renderer it is about to draw with.</summary>
+    public nint RendererHandle => _rendererHandle;
 
     public void Update(SdlNs.SDLRendererPtr renderer, Sprite sprite, uint[] palette)
     {
+        if (_created && (nint)renderer.Handle != _rendererHandle)
+            Dispose();   // a texture from another renderer draws as garbage there
         if (sprite.W != W || sprite.H != H)
         {
             Dispose();
@@ -40,6 +48,7 @@ public sealed unsafe class SpriteImage : IDisposable
                 Gfx.SDL_TEXTUREACCESS_STATIC, W, H);
             SdlNs.SDL.SetTextureBlendMode(_tex, SdlNs.SDLBlendMode.Blend);
             _created = true;
+            _rendererHandle = (nint)renderer.Handle;
         }
         fixed (uint* p = rgba)
             SdlNs.SDL.UpdateTexture(_tex, default, (nint)p, W * 4);

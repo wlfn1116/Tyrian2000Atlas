@@ -22,6 +22,15 @@ public sealed class WindowGeom
     public float Y { get; set; }
     public float W { get; set; }
     public float H { get; set; }
+    /// <summary>Maximized to the work area; X/Y/W/H keep the rect it restores to.</summary>
+    public bool Max { get; set; }
+    /// <summary>Living in its own detached OS window rather than the main one.</summary>
+    public bool Detached { get; set; }
+    /// <summary>That OS window's last frame (AuxW 0 = never detached).</summary>
+    public int AuxX { get; set; }
+    public int AuxY { get; set; }
+    public int AuxW { get; set; }
+    public int AuxH { get; set; }
 }
 
 /// <summary>
@@ -44,6 +53,7 @@ public sealed class AppSettings
     public bool ExpandedParallax { get; set; }         // Engaged sub-option: wider all-layer parallax sweep
     public bool MirrorLayers { get; set; } = true;     // Engaged sub-option: mirror layers past their side edges
     public bool TallStarfield { get; set; } = true;    // the build's rewritten starfield (either mode)
+    public bool IceBaseShots { get; set; } = true;     // the build's "Ice Base Shots" restore (either mode)
     public bool ShowScreenFilter { get; set; } = true;
     public bool ShowSmoothies { get; set; } = true; // retained JSON name: terrain smoothies
     // Nullable so an older settings file can inherit its former broad smoothie toggle.
@@ -77,6 +87,10 @@ public sealed class AppSettings
     public int SpritesColumns { get; set; }             // 0 = fit to the panel width
     public bool? SpritesCheckerboard { get; set; }      // null = never saved, defaults on
     public bool SpritesNumbers { get; set; }            // print each cell's sprite index on it
+    public int PictureZoom { get; set; }                // full-screen picture pane; 0 = fit to the pane
+    /// <summary>Show a picture in the palette the game loads it with, rather than the one the
+    /// sprite band's slider selects; null = never saved, and the game's own is the default.</summary>
+    public bool? PictureGamePalette { get; set; }
     /// <summary>Shop tables with the Engaged fork's post-load pass applied; null = never
     /// saved, and the fork's view is the default.</summary>
     public bool? ItemsFork { get; set; }
@@ -89,6 +103,12 @@ public sealed class AppSettings
     public int LevelOrder { get; set; }
     /// <summary>Bitmask of the EdgeKinds the level tree draws; 0 = never saved.</summary>
     public int TreeEdgeMask { get; set; }
+
+    // --- Editor ---
+    public bool ShowEditor { get; set; }                // the episode/level/enemy editor
+    public int EditorEpisode { get; set; } = 1;         // episode slot last edited (1..5)
+    public int EditorMode { get; set; }                 // 0 levels, 1 script, 2 enemies
+    public float EditorListWidth { get; set; }          // 0 = default
 
     // --- Audio ---
     public bool ShowMusic { get; set; }                 // the music player window

@@ -13,6 +13,10 @@ public struct PlacedObject
     public int Band;            // 0 sky / 25 ground / 50 top / 75 ground2
     public ushort Time;
     public bool ApproxX;
+    /// <summary>Index of the authored event that spawned this (raw walks only; -1 on
+    /// timeline routes, whose occurrences may repeat an event). What lets an editor map a
+    /// marker back to its record.</summary>
+    public int EventIndex;
     public int PathDistance;     // >= 0 when placed on an unrolled LevelTimeline
     public int UniformPathDistance; // same event on its carrier layer's 1:1 track
     public int UniformLayer;      // -1 screen-relative, otherwise background layer 0..2
@@ -89,11 +93,13 @@ public static class ObjectPlacer
         double Rate2() => (double)backMove2 * map1YDelayMax / (Math.Max(1, backMove) * map2YDelayMax);
         double Rate3() => (double)backMove3 * map1YDelayMax / Math.Max(1, backMove);
 
-        IEnumerable<EventRec> route = timeline is { Occurrences.Count: > 0 }
-            ? timeline.Occurrences.Select(o => o.Event)
-            : lv.Events;
+        // Raw walks carry each event's authored index along; a timeline route replays
+        // events and has no single index to give.
+        IEnumerable<(EventRec E, int Index)> route = timeline is { Occurrences.Count: > 0 }
+            ? timeline.Occurrences.Select(o => (o.Event, -1))
+            : lv.Events.Select((e, i) => (e, i));
         bool endedWalk = false;
-        foreach (var e in route)
+        foreach (var (e, eventIndex) in route)
         {
             // Advance the scroll accumulators up to this event's time at the current rates.
             // The maps stop when the level ends; authored events past the first end
@@ -159,13 +165,15 @@ public static class ObjectPlacer
                     for (int gx = 0; gx < 2; gx++)
                         AddObject(result, gd, lv, ed, banks, e, band, baseEy, scrollPos,
                             bg3x1, bg3x1b, smallEnemyAdjust, gx * 24, -gy * 28, k++, randomKey,
-                            bg2ScrollPos: anchor[1] + cumBg2, rawMove2: backMove2);
+                            bg2ScrollPos: anchor[1] + cumBg2, rawMove2: backMove2,
+                            eventIndex: eventIndex);
                 continue;
             }
 
             AddObject(result, gd, lv, ed, banks, e, band, baseEy, scrollPos,
                 bg3x1, bg3x1b, smallEnemyAdjust, 0, 0, 0, randomKey,
-                bg2ScrollPos: anchor[1] + cumBg2, rawMove2: backMove2);
+                bg2ScrollPos: anchor[1] + cumBg2, rawMove2: backMove2,
+                eventIndex: eventIndex);
         }
 
         if (scrollOut != null)
@@ -279,7 +287,7 @@ public static class ObjectPlacer
         int[] banks, EventRec e, int band, int baseEy, double scrollPos,
         bool bg3x1, bool bg3x1b, bool smallEnemyAdjust, int dx, int dy,
         int enemyTypeOfs, int randomKey, int pathDistance = -1, EventOccurrence? occurrence = null,
-        double bg2ScrollPos = 0, int rawMove2 = 0)
+        double bg2ScrollPos = 0, int rawMove2 = 0, int eventIndex = -1)
     {
         bool inline = e.Type is 49 or 50 or 51 or 52;
         int enemyId = inline ? 0 : e.Dat + enemyTypeOfs;
@@ -416,6 +424,7 @@ public static class ObjectPlacer
         {
             X = x, Y = y, EnemyId = enemyId == 0 && inline ? e.Dat : enemyId,
             Cat = cat, Band = band, Time = e.Time, ApproxX = approxX,
+            EventIndex = eventIndex,
             PathDistance = pathDistance, UniformPathDistance = uniformPathDistance,
             UniformLayer = uniformLayer, GameSourceY = gameSourceY,
             UniformSourceY = uniformSourceY, ScreenY = ey,

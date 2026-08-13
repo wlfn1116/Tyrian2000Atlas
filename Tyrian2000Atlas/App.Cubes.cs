@@ -438,9 +438,10 @@ public sealed unsafe partial class App
         {
             int pal = DataCubes.PaletteFor(cube.FaceSprite);
             var key = (_cubeEpisodeIdx, cube.FaceSprite, pal);
-            if (key != _cubeFaceKey)
+            if (key != _cubeFaceKey || _cubeFace.RendererHandle != (nint)_activeRenderer.Handle)
             {
-                _cubeFace.Update(_renderer, face!, _gd.Palettes.Get(pal));
+                // Re-uploaded when the window changes host too: textures are per-renderer.
+                _cubeFace.Update(_activeRenderer, face!, _gd.Palettes.Get(pal));
                 _cubeFaceKey = key;
             }
             // A bezel rather than a hairline box: the portrait is the one piece of art in the

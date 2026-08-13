@@ -19,10 +19,12 @@ public sealed unsafe class GameViewImage : IDisposable
     private SdlNs.SDLTexturePtr _tex;
     private bool _created;
 
-    /// <summary>Convert a crop of the sim's indexed buffer and upload.</summary>
+    /// <summary>Convert a crop of an indexed buffer and upload. The buffer's row stride
+    /// defaults to the simulator's; the editor's 320-wide text screens pass their own.</summary>
     public void Update(SdlNs.SDLRendererPtr renderer, byte[] screen, uint[] palette,
-        int x0, int y0, int w, int h)
+        int x0, int y0, int w, int h, int stride = -1)
     {
+        if (stride < 0) stride = GameSim.BufW;
         if (w != W || h != H)
         {
             if (_created) { SdlNs.SDL.DestroyTexture(_tex); _created = false; }
@@ -32,7 +34,7 @@ public sealed unsafe class GameViewImage : IDisposable
 
         for (int y = 0; y < h; y++)
         {
-            int src = (y0 + y) * GameSim.BufW + x0;
+            int src = (y0 + y) * stride + x0;
             int dst = y * w;
             for (int x = 0; x < w; x++)
                 _rgba[dst + x] = palette[screen[src + x]] | 0xFF000000u;

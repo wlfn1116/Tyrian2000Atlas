@@ -19,6 +19,14 @@ public sealed unsafe class SpriteAtlas : IDisposable
     /// <summary>Keep a row inside anything a GPU will accept; banks are far smaller in practice.</summary>
     private const int MaxTexDim = 4096;
 
+    /// <summary>
+    /// Empty texels around every cell, with each sprite's edge pixels replicated into its
+    /// ring. Sampling at a cell's exact edge lands on the replicated pixel instead of the
+    /// neighbouring sprite — without this, fractional zooms showed dashes of whatever
+    /// happened to sit next door in the atlas, exactly along tile boundaries.
+    /// </summary>
+    private const int Gutter = 1;
+
     public int Count { get; private set; }
     public int CellW { get; private set; }
     public int CellH { get; private set; }
@@ -56,27 +64,28 @@ public sealed unsafe class SpriteAtlas : IDisposable
             if (s.H > ch) ch = s.H;
         }
         CellW = cw; CellH = ch;
+        int strideW = cw + Gutter * 2, strideH = ch + Gutter * 2;
 
         // Roughly square, but never wider than a texture allows.
-        _cols = Math.Max(1, Math.Min((int)Math.Ceiling(Math.Sqrt(Count)), MaxTexDim / cw));
+        _cols = Math.Max(1, Math.Min((int)Math.Ceiling(Math.Sqrt(Count)), MaxTexDim / strideW));
         int rows = (Count + _cols - 1) / _cols;
         // A bank tall enough to overflow would have to be enormous; clamp rather than fail,
         // and the cells past the cut simply report size 0 and draw nothing.
-        int maxRows = Math.Max(1, MaxTexDim / ch);
+        int maxRows = Math.Max(1, MaxTexDim / strideH);
         if (rows > maxRows)
         {
             rows = maxRows;
             for (int i = _cols * rows; i < Count; i++) _size[i] = (0, 0);
         }
-        _texW = _cols * cw;
-        _texH = rows * ch;
+        _texW = _cols * strideW;
+        _texH = rows * strideH;
 
         var rgba = new uint[_texW * _texH];
         for (int i = 0; i < Count; i++)
         {
             var s = sprites[i];
             if (s == null || _size[i].W == 0) continue;
-            int cellX = (i % _cols) * cw, cellY = (i / _cols) * ch;
+            int cellX = (i % _cols) * strideW + Gutter, cellY = (i / _cols) * strideH + Gutter;
             if (cellY + s.H > _texH) continue;
             for (int y = 0; y < s.H; y++)
             {
@@ -87,11 +96,28 @@ public sealed unsafe class SpriteAtlas : IDisposable
                     rgba[dst + x] = c == 0 ? 0u : palette[c] | 0xFF000000u;
                 }
             }
+            // Replicate the sprite's edges into its gutter ring, so a sample that lands a
+            // hair outside the rect still reads this sprite's own pixels.
+            for (int y = 0; y < s.H; y++)
+            {
+                int row = (cellY + y) * _texW;
+                rgba[row + cellX - 1] = rgba[row + cellX];
+                rgba[row + cellX + s.W] = rgba[row + cellX + s.W - 1];
+            }
+            int top = (cellY - 1) * _texW, first = cellY * _texW;
+            int bot = (cellY + s.H) * _texW, last = (cellY + s.H - 1) * _texW;
+            for (int x = -1; x <= s.W; x++)
+            {
+                rgba[top + cellX + x] = rgba[first + cellX + Math.Clamp(x, 0, s.W - 1)];
+                rgba[bot + cellX + x] = rgba[last + cellX + Math.Clamp(x, 0, s.W - 1)];
+            }
         }
 
         _tex = SdlNs.SDL.CreateTexture(renderer, Gfx.SDL_PIXELFORMAT_ABGR8888,
             Gfx.SDL_TEXTUREACCESS_STATIC, _texW, _texH);
         SdlNs.SDL.SetTextureBlendMode(_tex, SdlNs.SDLBlendMode.Blend);
+        // Pixel art scales as pixels: no interpolation, no cross-cell sampling.
+        SdlNs.SDL.SetTextureScaleMode(_tex, SdlNs.SDLScaleMode.Nearest);
         fixed (uint* p = rgba)
             SdlNs.SDL.UpdateTexture(_tex, default, (nint)p, _texW * 4);
         _created = true;
@@ -104,8 +130,8 @@ public sealed unsafe class SpriteAtlas : IDisposable
         var (w, h) = _size[index];
         if (w == 0) return;
 
-        float u0 = (float)((index % _cols) * CellW) / _texW;
-        float v0 = (float)((index / _cols) * CellH) / _texH;
+        float u0 = ((index % _cols) * (CellW + Gutter * 2) + Gutter) / (float)_texW;
+        float v0 = ((index / _cols) * (CellH + Gutter * 2) + Gutter) / (float)_texH;
         dl.AddImage(Gfx.TexRef((nint)_tex.Handle), pos, pos + new Vector2(w * scale, h * scale),
             new Vector2(u0, v0), new Vector2(u0 + (float)w / _texW, v0 + (float)h / _texH), tint);
     }
