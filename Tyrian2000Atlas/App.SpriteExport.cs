@@ -271,6 +271,8 @@ public sealed unsafe partial class App
         SpriteStore.NewshFile => $"newsh{char.ToLowerInvariant(src.FileChar)}",
         SpriteStore.MainSheet => $"{(src.Xmas ? "tyrianc" : "tyrian")}_sheet{src.Index:00}",
         SpriteStore.MainBank => $"{(src.Xmas ? "tyrianc" : "tyrian")}_bank{src.Index:00}",
+        SpriteStore.Standalone =>
+            Path.GetFileNameWithoutExtension(GameData.StandaloneShapes[src.Index].File),
         _ => $"shapes{char.ToLowerInvariant(src.FileChar)}",
     };
 }

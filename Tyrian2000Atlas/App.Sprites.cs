@@ -47,10 +47,11 @@ public sealed unsafe partial class App
     private static readonly (string Label, Func<SpriteSource, bool> Match)[] SpriteGroups =
     {
         ("Enemy banks", s => s.Store == SpriteStore.Newsh),
-        ("Shop sheet", s => s.Store == SpriteStore.NewshFile),
+        ("Sheets loaded by name", s => s.Store == SpriteStore.NewshFile),
         ("tyrian.shp sheets", s => s.Store == SpriteStore.MainSheet && !s.Xmas),
         ("tyrian.shp banks", s => s.Store == SpriteStore.MainBank && !s.Xmas),
         ("Christmas (tyrianc.shp)", s => s.Xmas),
+        ("Outside tyrian.shp", s => s.Store == SpriteStore.Standalone),
         ("Terrain tiles", s => s.Store == SpriteStore.Tiles),
     };
 
@@ -175,7 +176,10 @@ public sealed unsafe partial class App
         if (atlas == null || atlas.Count == 0)
         {
             UiTitle(_sprSource.ListTitle.ToUpperInvariant(), AcSprite, _sprSource.Title);
-            UiEmpty("This bank could not be read", "Not present in the current data folder.", AcSprite);
+            // Name the file: the list is built from the folder, so a row that cannot be read now
+            // means the folder changed under it, not that the browser invented the bank.
+            UiEmpty("This bank could not be read",
+                $"{_sprSource.DiskFile} is missing from the data folder, or will not decode.", AcSprite);
             return;
         }
 
@@ -441,7 +445,7 @@ public sealed unsafe partial class App
         var users = SpriteUsers(_sprSource, _sprSelected);
         if (users.Count == 0)
         {
-            ImGui.TextColored(ColorOf(UiFaint), _sprSource.Store == SpriteStore.Newsh
+            ImGui.TextColored(ColorOf(UiFaint), EnemyBankOf(_sprSource) != 0
                 ? "No enemyDat entry in this episode names it."
                 : "Drawn by the menus rather than by an enemyDat entry.");
             ImGui.EndGroup();
@@ -487,19 +491,34 @@ public sealed unsafe partial class App
         ImGui.EndGroup();
     }
 
+    /// <summary>
+    /// The shape bank a browser row stands for, or 0 for a row no enemyDat entry can name. The
+    /// two tyrian.shp sheets JE_makeEnemy hard-codes are named by a bank just as much as a newsh
+    /// file is, so they answer for theirs -- without this, every coin, gem, datacube and powerup
+    /// claimed to be "drawn by the menus".
+    /// </summary>
+    private static int EnemyBankOf(SpriteSource src) => src.Store switch
+    {
+        SpriteStore.Newsh => src.Index,
+        SpriteStore.MainSheet when !src.Xmas && GameData.HardCodedBankSheet(21) == src.Index => 21,
+        SpriteStore.MainSheet when !src.Xmas && GameData.HardCodedBankSheet(26) == src.Index => 26,
+        _ => 0,
+    };
+
     /// <summary>enemyDat entries in the shown episode whose shape bank is this one and whose
     /// frame table names this sprite -- the reverse of the enemy browser's sprite link.</summary>
     private List<int> SpriteUsers(SpriteSource src, int sprite)
     {
         var users = new List<int>();
-        if (_gd == null || src.Store != SpriteStore.Newsh || CurEpisode == null) return users;
+        int bank = EnemyBankOf(src);
+        if (_gd == null || bank == 0 || CurEpisode == null) return users;
         EnemyData ed;
         try { ed = _gd.GetEnemyData(CurEpisode); } catch { return users; }
 
         for (int i = 0; i < ed.Enemies.Length; i++)
         {
             var e = ed.Enemies[i];
-            if (!e.Loaded || e.ShapeBank != src.Index || e.EGraphic == null) continue;
+            if (!e.Loaded || e.ShapeBank != bank || e.EGraphic == null) continue;
             bool uses = e.Dgr == sprite;
             for (int g = 0; !uses && g < e.EGraphic.Length; g++) uses = e.EGraphic[g] == sprite;
             if (uses) users.Add(i);

@@ -976,6 +976,7 @@ internal static unsafe class Program
     {
         string? dir = T2A.Tyrian.GameData.FindDataDir();
         var gd = new T2A.Tyrian.GameData(dir!);
+        int bad = CheckSpriteBankCoverage(dir!, gd);
         foreach (var ep in gd.Episodes)
         {
             var ed = gd.GetEnemyData(ep);
@@ -1001,7 +1002,43 @@ internal static unsafe class Program
                     Console.WriteLine($"  ep{ep.Number} #{item.FileNum} {item.Name.Trim(),-10} 2x2={big} nullBottom={nullBottom} shortTop={shortTop}");
             }
         }
-        return 0;
+        return bad == 0 ? 0 : 1;
+    }
+
+    /// <summary>
+    /// Every row of the sprite browser's own bank list decodes, and every shape file the folder
+    /// holds is reachable from it. Two failures this catches: a row built from shapeFile[] that
+    /// names a file no release ships (bank 21's newshq.shp), and a file on disk that nothing in
+    /// the list points at (the five newsh sheets loaded by name, the four outside tyrian.shp).
+    /// </summary>
+    static int CheckSpriteBankCoverage(string dir, T2A.Tyrian.GameData gd)
+    {
+        var sources = T2A.App.SpriteSourcesFor(gd);
+        int empty = 0;
+        var covered = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var src in sources)
+        {
+            covered.Add(src.DiskFile);
+            int n = 0;
+            try
+            {
+                foreach (var s in T2A.App.SpritesOf(gd, src))
+                    if (s is { W: > 0, H: > 0 }) n++;
+            }
+            catch (Exception e) { Console.WriteLine($"  THROWS  {src.Title}: {e.GetType().Name}"); }
+            if (n == 0) { Console.WriteLine($"  EMPTY   {src.Title}"); empty++; }
+        }
+
+        // tyrian.shp's sub-tables are rows of their own, so the file itself is covered by them.
+        var onDisk = new List<string>();
+        onDisk.AddRange(Directory.GetFiles(dir, "*.shp").Select(Path.GetFileName)!);
+        onDisk.AddRange(Directory.GetFiles(dir, "shapes*.dat").Select(Path.GetFileName)!);
+        var missed = onDisk.Where(f => !covered.Contains(f!)).OrderBy(f => f).ToList();
+        foreach (var f in missed) Console.WriteLine($"  UNLISTED {f}");
+
+        Console.WriteLine($"sprite banks: {sources.Count} listed, {empty} empty; " +
+                          $"{onDisk.Count} shape files on disk, {missed.Count} unlisted");
+        return empty + missed.Count;
     }
 
     /// <summary>

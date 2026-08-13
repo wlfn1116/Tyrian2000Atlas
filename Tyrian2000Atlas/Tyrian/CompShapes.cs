@@ -104,6 +104,10 @@ public sealed class SpriteBank
     public Sprite? Get(int index) =>
         index >= 0 && index < _sprites.Length ? _sprites[index] : null;
 
+    /// <summary>The bank as a dense index-aligned array, which is the form the browsers' atlas
+    /// builder takes.</summary>
+    public Sprite?[] ToArray() => (Sprite?[])_sprites.Clone();
+
     public static SpriteBank Parse(byte[] d, int offset)
     {
         var r = new ByteReader(d, offset);
@@ -143,6 +147,38 @@ public sealed class SpriteBank
             x = 0;
         }
         return spr;
+    }
+}
+
+/// <summary>
+/// What the DOS ship editor wrote (user1.shp, user2.shp): a u16, then the ship's cells as bare
+/// uncompressed 12x14 indexed bitmaps, then a short trailer of its own.
+///
+/// Nothing in the game reads these back. Its debug viewer runs them through the Sprite_array
+/// reader (mainint.c load_sprite_array_file), which takes the leading u16 as a sprite count,
+/// sees 1, and shows a single empty slot -- so the cells never appear there. The count here
+/// comes from the file's length instead, which is what makes all 164 cells readable.
+///
+/// The layout is established, not guessed: it was recovered independently of this reader (a
+/// dominant 12-byte stride in the byte stream, confirmed by eye), and this decode matches the
+/// data dump's cell PNGs byte for byte.
+/// </summary>
+public static class ShipEditorCells
+{
+    public const int CellW = 12, CellH = 14;
+
+    public static Sprite?[] Parse(byte[] d)
+    {
+        const int cell = CellW * CellH;
+        int count = Math.Max(0, (d.Length - 2) / cell);
+        var list = new Sprite?[count];
+        for (int i = 0; i < count; i++)
+        {
+            var px = new byte[cell];
+            Array.Copy(d, 2 + i * cell, px, 0, cell);
+            list[i] = new Sprite { W = CellW, H = CellH, Pixels = px };
+        }
+        return list;
     }
 }
 

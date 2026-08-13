@@ -16,9 +16,13 @@ public enum SpriteStore
     MainBank,
     /// <summary>shapes%c.dat -- the 600 terrain tiles a level's backgrounds are built from.</summary>
     Tiles,
-    /// <summary>newsh%c.shp by its file character. The shop sheet (newsh1.shp) is reached this
-    /// way because no enemy shape bank points at it.</summary>
+    /// <summary>newsh%c.shp by its file character -- the five sheets the engine loads by name
+    /// rather than through an enemy shape bank (the shop, explosions, Destruct, the ship
+    /// editor's ships, and one loose copy of a tyrian.shp sheet).</summary>
     NewshFile,
+    /// <summary>A shape file outside tyrian.shp: an index into
+    /// <see cref="GameData.StandaloneShapes"/>.</summary>
+    Standalone,
 }
 
 /// <summary>
@@ -34,14 +38,16 @@ public readonly record struct SpriteSource(SpriteStore Store, int Index, bool Xm
     public static SpriteSource MainBank(int i, bool xmas = false) => new(SpriteStore.MainBank, i, xmas);
     public static SpriteSource Tiles(char c) => new(SpriteStore.Tiles, c);
     public static SpriteSource NewshFile(char c) => new(SpriteStore.NewshFile, c);
+    public static SpriteSource Standalone(int i) => new(SpriteStore.Standalone, i);
 
     /// <summary>The sheet the shop and HUD draw every purchasable item's icon from.</summary>
     public static SpriteSource Shop => NewshFile('1');
 
     public char FileChar => (char)Index;
 
-    /// <summary>Sprite numbering base: only the tyrian.shp Sprite_array banks are 0-based.</summary>
-    public int FirstIndex => Store == SpriteStore.MainBank ? 0 : 1;
+    /// <summary>Sprite numbering base: the Sprite_array forms (tyrian.shp's own banks, and the
+    /// stand-alone files that use the same layout) are 0-based; the compiled sheets are 1-based.</summary>
+    public int FirstIndex => Store is SpriteStore.MainBank or SpriteStore.Standalone ? 0 : 1;
 
     /// <summary>tyrian.shp, or its Christmas twin.</summary>
     private string ShapeFile => Xmas ? "tyrianc.shp" : "tyrian.shp";
@@ -49,9 +55,11 @@ public readonly record struct SpriteSource(SpriteStore Store, int Index, bool Xm
     public string Title => Store switch
     {
         SpriteStore.Newsh => $"Bank {Index:00}  ·  newsh{char.ToLowerInvariant(GameData.ShapeBankChar(Index))}.shp",
-        SpriteStore.NewshFile => $"newsh{char.ToLowerInvariant(FileChar)}.shp  ·  shop & HUD icons",
-        SpriteStore.MainSheet => $"{ShapeFile} #{Index}  ·  {MainSheetName(Index)}",
+        SpriteStore.NewshFile => $"newsh{char.ToLowerInvariant(FileChar)}.shp  ·  {NewshFileRole(FileChar)}",
+        SpriteStore.MainSheet => $"{ShapeFile} #{Index}  ·  {MainSheetName(Index)}" +
+                                 (BankNote.Length > 0 ? $"  ·  {BankNote}" : ""),
         SpriteStore.MainBank => $"{ShapeFile} #{Index}  ·  {MainBankName(Index)}",
+        SpriteStore.Standalone => $"{StandaloneFile}  ·  {StandaloneName}  ·  {StandaloneRole}",
         _ => $"shapes{char.ToLowerInvariant(FileChar)}.dat  ·  terrain tiles",
     };
 
@@ -59,9 +67,10 @@ public readonly record struct SpriteSource(SpriteStore Store, int Index, bool Xm
     public string ShortName => Store switch
     {
         SpriteStore.Newsh => $"{Index:00}  newsh{char.ToLowerInvariant(GameData.ShapeBankChar(Index))}",
-        SpriteStore.NewshFile => $"newsh{char.ToLowerInvariant(FileChar)}  (shop)",
+        SpriteStore.NewshFile => $"newsh{char.ToLowerInvariant(FileChar)}",
         SpriteStore.MainSheet => MainSheetName(Index),
         SpriteStore.MainBank => MainBankName(Index),
+        SpriteStore.Standalone => StandaloneName,
         _ => $"shapes{char.ToLowerInvariant(FileChar)}",
     };
 
@@ -70,18 +79,70 @@ public readonly record struct SpriteSource(SpriteStore Store, int Index, bool Xm
     public string ListTitle => Store switch
     {
         SpriteStore.Newsh => $"Bank {Index:00}",
-        SpriteStore.NewshFile => "Shop & HUD icons",
+        SpriteStore.NewshFile => $"newsh{char.ToLowerInvariant(FileChar)}.shp",
         SpriteStore.MainSheet => MainSheetName(Index),
         SpriteStore.MainBank => MainBankName(Index),
+        SpriteStore.Standalone => StandaloneName,
         _ => $"Tile set {char.ToUpperInvariant(FileChar)}",
     };
 
     public string ListNote => Store switch
     {
         SpriteStore.Newsh => $"newsh{char.ToLowerInvariant(GameData.ShapeBankChar(Index))}.shp",
-        SpriteStore.NewshFile => $"newsh{char.ToLowerInvariant(FileChar)}.shp",
-        SpriteStore.MainSheet or SpriteStore.MainBank => $"{ShapeFile} #{Index}",
+        // The role, not the file name: the file name is this row's title, and what a sheet
+        // nothing points a shape bank at is FOR is the thing the list cannot otherwise say.
+        SpriteStore.NewshFile => NewshFileRole(FileChar),
+        // The two hard-coded sheets say their bank instead of their sub-table number: the group
+        // heading already says which file, and 210px of list row fits one or the other, not both.
+        // The heading and tooltip (Title) carry the pair.
+        SpriteStore.MainSheet => BankNote.Length > 0 ? BankNote : $"{ShapeFile} #{Index}",
+        SpriteStore.MainBank => $"{ShapeFile} #{Index}",
+        SpriteStore.Standalone => StandaloneFile,
         _ => $"shapes{char.ToLowerInvariant(FileChar)}.dat",
+    };
+
+    /// <summary>The file this bank is read out of, for a message that has to name it.</summary>
+    public string DiskFile => Store switch
+    {
+        SpriteStore.Newsh => $"newsh{char.ToLowerInvariant(GameData.ShapeBankChar(Index))}.shp",
+        SpriteStore.NewshFile => $"newsh{char.ToLowerInvariant(FileChar)}.shp",
+        SpriteStore.MainSheet or SpriteStore.MainBank => ShapeFile,
+        SpriteStore.Standalone => StandaloneFile,
+        _ => $"shapes{char.ToLowerInvariant(FileChar)}.dat",
+    };
+
+    private string StandaloneFile => Index >= 0 && Index < GameData.StandaloneShapes.Length
+        ? GameData.StandaloneShapes[Index].File : "?";
+
+    private string StandaloneName => Index >= 0 && Index < GameData.StandaloneShapes.Length
+        ? GameData.StandaloneShapes[Index].Name : "?";
+
+    /// <summary>What reads the file, which for three of the four is "nothing" -- worth saying,
+    /// since a viewer showing them otherwise implies the game draws them.</summary>
+    private string StandaloneRole => Index >= 0 && Index < GameData.StandaloneShapes.Length
+        ? GameData.StandaloneShapes[Index].Role : "?";
+
+    /// <summary>
+    /// The shape bank a tyrian.shp sheet answers to, for the two JE_makeEnemy hard-codes. Said
+    /// on the sheet's own row because these are the rows that carry banks 21 and 26 -- the
+    /// "Enemy banks" group cannot list them, since neither ever reaches a newsh file.
+    /// </summary>
+    private string BankNote => Index switch
+    {
+        9 when !Xmas => "shape bank 26",
+        10 when !Xmas => "shape bank 21",
+        _ => "",
+    };
+
+    /// <summary>What a newsh sheet that no shape bank names is loaded for.</summary>
+    private static string NewshFileRole(char c) => char.ToLowerInvariant(c) switch
+    {
+        '1' => "shop, HUD & mouse pointer",
+        '6' => "explosions & score popups",
+        '~' => "Destruct minigame",
+        '$' => "ship editor's extra ships",
+        '(' => "loose copy of tyrian.shp #7",
+        _ => "loaded by name, not by bank",
     };
 
     // sprite.h:29-36 -- the Sprite_array sub-tables.
@@ -221,10 +282,13 @@ public sealed unsafe partial class App
     /// atlas index and a game sprite index are the same thing everywhere downstream. The
     /// 1-based stores get a null at slot 0.
     /// </summary>
-    private static Sprite?[] SpritesOf(GameData gd, SpriteSource src)
+    internal static Sprite?[] SpritesOf(GameData gd, SpriteSource src)
     {
         switch (src.Store)
         {
+            case SpriteStore.Standalone:
+                return gd.GetStandalone(src.Index);
+
             case SpriteStore.Newsh:
             case SpriteStore.NewshFile:
             case SpriteStore.MainSheet:
@@ -459,20 +523,40 @@ public sealed unsafe partial class App
         return false;
     }
 
-    /// <summary>Every bank the browser can show, in the order it lists them. The Christmas
-    /// set is only offered when tyrianc.shp is actually present.</summary>
-    private List<SpriteSource> AllSpriteSources()
+    private List<SpriteSource> AllSpriteSources() => SpriteSourcesFor(_gd);
+
+    /// <summary>
+    /// Every bank the browser can show, in the order it lists them -- which is every shape file
+    /// the data folder holds, and nothing it does not. The optional groups (Christmas, the
+    /// stand-alone files) are offered only when their files are actually there.
+    ///
+    /// Static and GameData-driven so the "--checksprites" self-check can enumerate the same list
+    /// without a window or a renderer.
+    /// </summary>
+    internal static List<SpriteSource> SpriteSourcesFor(GameData? gd)
     {
         var list = new List<SpriteSource>();
-        for (int i = 1; i <= GameData.ShapeBankCount; i++) list.Add(SpriteSource.Newsh(i));
-        list.Add(SpriteSource.Shop);
+        // Banks 21 and 26 are left out deliberately. Neither ever loads a newsh file -- the
+        // engine answers both from tyrian.shp, which the sheet rows below say -- and 21's
+        // shapeFile[] entry names newshq.shp, a file no release ships. Listing them by that
+        // table put a row in the browser that could never be read.
+        for (int i = 1; i <= GameData.ShapeBankCount; i++)
+            if (!GameData.IsHardCodedBank(i)) list.Add(SpriteSource.Newsh(i));
+        // The rest of the newsh sheets on disk: the ones the engine loads by name. Driven by the
+        // folder, so a data set with more or fewer of them lists exactly what it has.
+        if (gd != null)
+            foreach (char c in gd.NewshCharsPresent)
+                if (GameData.ShapeBanksFor(c).Count == 0) list.Add(SpriteSource.NewshFile(c));
         for (int i = 7; i <= 12; i++) list.Add(SpriteSource.MainSheet(i));
         for (int i = 0; i <= 6; i++) list.Add(SpriteSource.MainBank(i));
-        if (_gd?.XmasMain != null)
+        if (gd?.XmasMain != null)
         {
             for (int i = 7; i <= 12; i++) list.Add(SpriteSource.MainSheet(i, xmas: true));
             for (int i = 0; i <= 6; i++) list.Add(SpriteSource.MainBank(i, xmas: true));
         }
+        if (gd != null)
+            for (int i = 0; i < GameData.StandaloneShapes.Length; i++)
+                if (gd.HasStandalone(i)) list.Add(SpriteSource.Standalone(i));
         foreach (char c in GameData.TileSetChars) list.Add(SpriteSource.Tiles(c));
         return list;
     }
