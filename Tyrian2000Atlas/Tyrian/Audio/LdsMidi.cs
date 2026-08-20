@@ -183,7 +183,10 @@ public static class LdsMidi
         public byte keyoff;
         public byte portamento;
         public sbyte glide;
-        // skip 1 byte
+        /// <summary>Detune in 1/16 semitones, normalized within equivalent patch groups.</summary>
+        public sbyte finetune;
+        /// <summary>Envelope-derived duration in player ticks; 0 means hold.</summary>
+        public ushort envelope_ticks;
         // skip 4 bytes worth of digital instrument crap
         // skip 3 more bytes worth of Adlib crap that isn't even used
         public byte midi_instrument;
@@ -191,6 +194,72 @@ public static class LdsMidi
         public byte midi_key;
         public sbyte midi_transpose;
         // skip 2 bytes worth of MIDI dummy fields or whatever
+    }
+
+    /// <summary>Seconds one envelope phase takes to fall from <paramref name="from"/> to
+    /// <paramref name="to"/>, using opl.c's slowest key-scale slot. A zero rate returns -1
+    /// because that phase never completes.</summary>
+    private static double LdsEnvPhaseSeconds(uint rate, double from, double to)
+    {
+        const double DecRelConst = 1.0 / 39.28064;
+
+        if (rate == 0)
+            return -1.0;
+
+        double perSample = -7.4493 * Math.Log(2.0) * DecRelConst * Math.Pow(2.0, (double) rate);
+
+        return Math.Log(to / from) / perSample;
+    }
+
+    /// <summary>A percussive operator's time to silence, or -1 for a sustaining operator.</summary>
+    private static double LdsOperatorSeconds(byte misc, byte ad, byte sr)
+    {
+        const double Silence = 0.00000001;
+
+        if ((misc & 0x20) != 0)
+            return -1.0;
+
+        uint level = (uint) (sr >> 4);
+        double sustain = (level == 15) ? 0.0 : Math.Pow(2.0, -0.5 * (double) level);
+
+        if (sustain <= Silence)
+            return LdsEnvPhaseSeconds((uint) (ad & 15), 1.0, Silence);
+
+        double decay = LdsEnvPhaseSeconds((uint) (ad & 15), 1.0, sustain);
+        double release = LdsEnvPhaseSeconds((uint) (sr & 15), sustain, Silence);
+
+        return (decay < 0.0 || release < 0.0) ? -1.0 : decay + release;
+    }
+
+    /// <summary>Estimates a key-off-free voice's duration. AM voices use the slower operator;
+    /// 0 means hold.</summary>
+    private static ushort LdsEnvelopeTicks(ReadOnlySpan<byte> record)
+    {
+        // DefaultTempoLDS at 35 Hz produces 70 player ticks per second.
+        const double TicksPerSecond = 70.0;
+        const double MaxTicks = 65535.0;
+
+        double seconds = LdsOperatorSeconds(record[5], record[7], record[8]);
+
+        if ((record[10] & 1) == 1)
+        {
+            double modulator = LdsOperatorSeconds(record[0], record[2], record[3]);
+
+            if (seconds < 0.0 || modulator < 0.0)
+                seconds = -1.0;
+            else if (modulator > seconds)
+                seconds = modulator;
+        }
+
+        if (seconds < 0.0)
+            return 0;
+
+        double ticks = seconds * TicksPerSecond;
+
+        if (ticks >= MaxTicks)
+            return (ushort) MaxTicks;
+
+        return (ushort) ((ticks < 1.0) ? 1.0 : ticks);
     }
 
     /// <summary>Per-channel player state (<c>channel_state</c>).</summary>
@@ -202,7 +271,9 @@ public static class LdsMidi
         public byte glideto, portspeed;
         public byte nextvol;
         public byte volmod = 0, volcar = 0;
-        public byte keycount, packwait;
+        public byte packwait;
+        /// <summary>Ticks left before this note is released. An envelope length outruns a byte.</summary>
+        public ushort keycount;
 
         public ChanCheat chancheat;
 
@@ -276,8 +347,8 @@ public static class LdsMidi
 
             if (channel != 9)
             {
-                // set fine tune
-                high += (uint) (int) c.finetune;
+                // The patch detune and the channel detune sum in a signed byte, as in lds_play.c.
+                high = (uint) ((int) high + (((patch.finetune + c.finetune + 0x80) & 0xFF) - 0x80));
 
                 // and MIDI transpose
                 high = (uint) ((int) high + (patch.midi_transpose << 4));
@@ -321,7 +392,7 @@ public static class LdsMidi
             {
                 buffer[0] = 7;
                 buffer[1] = (byte) volume;
-                track.AddEvent(new LdsMidiEvent(Timestamp, MidiEventType.ControlChange, last_channel[chan], new byte[] { buffer[0], buffer[1] }));
+                track.AddEvent(new LdsMidiEvent(Timestamp, MidiEventType.ControlChange, channel, new byte[] { buffer[0], buffer[1] }));
                 last_sent_volume[channel] = (byte) volume;
             }
 
@@ -339,17 +410,25 @@ public static class LdsMidi
                     note += (uint) (int) c.lasttune;
                     c.lasttune = 0;
 
-                    if (last_pitch_wheel[channel] != 0)
+                    if (last_pitch_wheel[last_channel[chan]] != 0)
                     {
                         buffer[0] = 0;
                         buffer[1] = 64;
 
                         track.AddEvent(new LdsMidiEvent(Timestamp, MidiEventType.PitchBendChange, last_channel[chan], new byte[] { buffer[0], buffer[1] }));
 
-                        last_pitch_wheel[channel] = 0;
+                        last_pitch_wheel[last_channel[chan]] = 0;
                     }
                 }
             }
+
+            // Split detune between the nearest key and a pitch-wheel remainder.
+            uint key = (note + 8) >> 4;
+            int key_detune = (int) note - (int) (key << 4);
+
+            // Glide, vibrato, and residual detune share the channel pitch wheel.
+            if (channel != 9)
+                c.lasttune = (short) (c.lasttune + key_detune);
 
             if (c.lasttune != last_pitch_wheel[channel])
             {
@@ -365,18 +444,18 @@ public static class LdsMidi
             {
                 if ((patch.portamento == 0) || (last_note[chan] == 0xFF))
                 {
-                    buffer[0] = (byte) (note >> 4);
+                    buffer[0] = (byte) key;
                     buffer[1] = patch.midi_velocity;
 
                     track.AddEvent(new LdsMidiEvent(Timestamp, MidiEventType.NoteOn, channel, new byte[] { buffer[0], buffer[1] }));
 
-                    last_note[chan] = (byte) (note >> 4);
+                    last_note[chan] = (byte) key;
                     last_channel[chan] = (byte) channel;
                     c.gototune = c.lasttune;
                 }
                 else
                 {
-                    c.gototune = (short) (note - (uint) (last_note[chan] << 4) + (uint) (int) c.lasttune);
+                    c.gototune = (short) (note - (uint) (last_note[chan] << 4) + (uint) (int) c.lasttune - (uint) key_detune);
                     c.portspeed = patch.portamento;
 
                     buffer[0] = last_note[chan] = (byte) saved_last_note;
@@ -387,12 +466,12 @@ public static class LdsMidi
             }
             else
             {
-                buffer[0] = (byte) (note >> 4);
+                buffer[0] = (byte) key;
                 buffer[1] = patch.midi_velocity;
 
                 track.AddEvent(new LdsMidiEvent(Timestamp, MidiEventType.NoteOn, channel, new byte[] { buffer[0], buffer[1] }));
 
-                last_note[chan] = (byte) (note >> 4);
+                last_note[chan] = (byte) key;
                 last_channel[chan] = (byte) channel;
 
                 c.gototune = patch.glide;
@@ -400,10 +479,63 @@ public static class LdsMidi
             }
 
             c.glideto  = 0;
-            c.keycount = patch.keyoff;
+            c.keycount = (patch.keyoff != 0) ? patch.keyoff : patch.envelope_ticks;
             c.nextvol  = 0;
             c.finetune = 0;
         }
+    }
+
+    /* Record sizes in an LDS file. A position holds one three-byte entry per channel. */
+    private const int LdsPatchBytes = 46;
+    private const int LdsPositionBytes = 9 * 3;
+
+    /* Patch fields excluded from voice-group identity. */
+    private const int LdsModVolume = 1;
+    private const int LdsCarVolume = 6;
+    private const int LdsDetune = 14;
+    private const int LdsMidiVelocity = 41;
+
+    private static bool LdsSameVoice(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b)
+    {
+        for (int i = 0; i < LdsPatchBytes; ++i)
+        {
+            if (i == LdsModVolume || i == LdsCarVolume || i == LdsDetune || i == LdsMidiVelocity)
+                continue;
+
+            if (a[i] != b[i])
+                return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>Preserves relative detune within equivalent patch groups. Lone patches normalize
+    /// to zero because <c>midi_transpose</c> carries their authored MIDI pitch.</summary>
+    private static void LdsReduceDetune(SoundPatch[] patches, ReadOnlySpan<byte> records)
+    {
+        sbyte[] reduced = new sbyte[patches.Length];
+
+        for (int i = 0; i < patches.Length; ++i)
+        {
+            int total = 0, members = 0;
+
+            for (int j = 0; j < patches.Length; ++j)
+            {
+                if (LdsSameVoice(records.Slice(i * LdsPatchBytes, LdsPatchBytes),
+                                 records.Slice(j * LdsPatchBytes, LdsPatchBytes)))
+                {
+                    total += patches[j].finetune;
+                    ++members;
+                }
+            }
+
+            int mean = (total < 0 ? total - (members / 2) : total + (members / 2)) / members;
+
+            reduced[i] = (sbyte) (patches[i].finetune - mean);
+        }
+
+        for (int i = 0; i < patches.Length; ++i)
+            patches[i].finetune = reduced[i];
     }
 
     /// <summary>Converts one raw LDS song. Returns null if the data is not valid LDS.</summary>
@@ -436,7 +568,7 @@ public static class LdsMidi
             byte pattern_length = lds[it + 3];
             it += 4;
 
-            if (end - it < 9)
+            if (end - it < 10)  // nine channel delays, then the percussion register
                 return null;
 
             byte[] ChannelDelay = new byte[9];
@@ -457,10 +589,11 @@ public static class LdsMidi
 
             it += 2;
 
-            if (end - it < 46 * PatchCount)
+            if (end - it < LdsPatchBytes * PatchCount)
                 return null;
 
             SoundPatch[] Patches = new SoundPatch[PatchCount];
+            int PatchRecords = it;
 
             for (int i = 0; i < PatchCount; ++i)
             {
@@ -472,7 +605,7 @@ public static class LdsMidi
                 patch.keyoff = lds[it++];
                 patch.portamento = lds[it++];
                 patch.glide = (sbyte) lds[it++];
-                it++;
+                patch.finetune = (sbyte) lds[it++];
                 it += 2;    // vibrato, vibrato_delay
                 it += 3;    // modulator_tremolo, carrier_tremolo, tremolo_delay
                 it += 20;   // arpeggio, arpeggio_table[12], 7 unused
@@ -487,6 +620,11 @@ public static class LdsMidi
                     patch.glide = 0;
             }
 
+            LdsReduceDetune(Patches, lds.Slice(PatchRecords, LdsPatchBytes * PatchCount));
+
+            for (int i = 0; i < PatchCount; ++i)
+                Patches[i].envelope_ticks = LdsEnvelopeTicks(lds.Slice(PatchRecords + (i * LdsPatchBytes), LdsPatchBytes));
+
             if (end - it < 2)
                 return null;
 
@@ -499,7 +637,7 @@ public static class LdsMidi
 
             PositionData[] Positions = new PositionData[9 * PositionCount];
 
-            if (end - it < 3 * PositionCount)
+            if (end - it < LdsPositionBytes * PositionCount)
                 return null;
 
             for (int i = 0; i < PositionCount; ++i)
@@ -1040,14 +1178,15 @@ public static class LdsMidi
                         buffer[0] = last_note[i];
                         buffer[1] = 127;
 
-                        Track.AddEvent(new LdsMidiEvent(Timestamp + Channel[i].keycount, MidiEventType.NoteOff, last_channel[i], new byte[] { buffer[0], buffer[1] }));
+                        // Release at the loop boundary; events scheduled later are never reached on repeat.
+                        Track.AddEvent(new LdsMidiEvent(Timestamp, MidiEventType.NoteOff, last_channel[i], new byte[] { buffer[0], buffer[1] }));
 
                         if (last_pitch_wheel[last_channel[i]] != 0)
                         {
                             buffer[0] = 0;
                             buffer[1] = 0x40;
 
-                            Track.AddEvent(new LdsMidiEvent(Timestamp + Channel[i].keycount, MidiEventType.PitchBendChange, last_channel[i], new byte[] { buffer[0], buffer[1] }));
+                            Track.AddEvent(new LdsMidiEvent(Timestamp, MidiEventType.PitchBendChange, last_channel[i], new byte[] { buffer[0], buffer[1] }));
                         }
                     }
 

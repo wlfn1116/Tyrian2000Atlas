@@ -33,6 +33,7 @@ public static class ForkRestoration
         LabelAmmoSidekicks(it);
         FixWobbley(it);
         FillBlankIcons(it);
+        ApplyUnusedShopSprites(it);
     }
 
     /// <summary>
@@ -239,5 +240,80 @@ public static class ForkRestoration
         for (int i = 1; i < it.Shields.Length; i++)
             if (it.Shields[i] != null && it.Shields[i].ItemGraphic == 0 && Named(it.Shields[i].Name))
                 it.Shields[i].ItemGraphic = PlaceholderIcon;
+    }
+
+    /// <summary>The shop sheet's never-referenced icons, handed to the weapons and sidekicks that
+    /// otherwise share another item's icon or fall back to the 167 placeholder
+    /// (episodes.c <c>unusedSpritePorts</c>).</summary>
+    private static readonly (byte Port, ushort Gr)[] UnusedSpritePorts =
+    {
+        (31,  15),  // Guided Bombs
+        (32, 191),  // Shuruiken Field       (was the 167 placeholder)
+        (33,  39),  // Poison Bomb
+        (34,  77),  // Protron Wave          (was the 167 placeholder; shares Protron Z's icon)
+        (35, 205),  // The Orange Juicer     (was the 167 placeholder)
+        (36,  17),  // NortShip Super Pulse
+        (37,  15),  // NortShip Spreader
+        (38,  43),  // NortShip Spreader B
+        (39, 191),  // Atomic RailGun
+        (41,  41),  // Sonic Impulse         (shares Sonic Wave's icon)
+        (42, 205),  // RetroBall
+        (44, 167),  // Pretzel Missile
+        (45,  43),  // Dragon Frost
+        (46, 167),  // People Pretzels
+        (47,  39),  // Dragon Flame
+    };
+
+    /// <summary>Sidekick slots that share an icon (episodes.c <c>unusedSpriteOptions</c>). The
+    /// slot numbers are verified in all three item tables.</summary>
+    private static readonly (byte Opt, ushort Gr)[] UnusedSpriteOptions =
+    {
+        ( 5, 129),  // Wobbley
+        (12,  45),  // Zica SuperCharger
+        (29,   3),  // Tropical Cherry Companion (shares the Banana Blast icon)
+        (30, 205),  // Satellite Marlo
+        (32, 203),  // Flying Punch
+    };
+
+    /// <summary>Specials whose shop icon belonged to another special
+    /// (episodes.c <c>unusedSpecialIcons</c>).</summary>
+    private static readonly (byte Id, ushort Gr)[] UnusedSpecialIcons =
+    {
+        (48, 53),   // Dragon Lightning (was 93, Lightning Zone's)
+    };
+
+    /// <summary>The icon the restored Charge-Laser Cannon takes
+    /// (episodes.c <c>UNUSED_SPRITE_CHARGE_LASER_GR</c>).</summary>
+    private const ushort ChargeLaserIcon = 17;
+
+    /// <summary>
+    /// Hand the shop sheet's eleven never-referenced 2x2 icons to the weapons and sidekicks that
+    /// otherwise share another item's icon, or fall back to the 167 placeholder
+    /// (episodes.c <c>JE_applyUnusedShopSprites</c>). Runs after <see cref="FillBlankIcons"/>,
+    /// since several of these are exactly the entries that just took the placeholder.
+    ///
+    /// Not reproduced: the composite icon <c>draw_special_icon</c> builds for the eleven specials
+    /// that share a "?" -- a ship body under a replacement upper half. That is a HUD drawing
+    /// change rather than an item-data one, and the browser draws a single shop icon per item.
+    /// </summary>
+    private static void ApplyUnusedShopSprites(ItemData it)
+    {
+        foreach (var (port, gr) in UnusedSpritePorts)
+            if (port < it.Ports.Length && it.Ports[port] != null)
+                it.Ports[port].ItemGraphic = gr;
+
+        foreach (var (opt, gr) in UnusedSpriteOptions)
+            if (opt < it.Options.Length && it.Options[opt] != null)
+                it.Options[opt].ItemGraphic = gr;
+
+        foreach (var (id, gr) in UnusedSpecialIcons)
+            if (id < it.Specials.Length && it.Specials[id] != null)
+                it.Specials[id].ItemGraphic = gr;
+
+        // The Charge-Laser Cannon lands in whatever "None" slot this episode had spare, so its
+        // icon can only be set once that slot is known.
+        if (it.ChargeLaserSlot > 0 && it.ChargeLaserSlot < it.Options.Length &&
+            it.Options[it.ChargeLaserSlot] != null)
+            it.Options[it.ChargeLaserSlot].ItemGraphic = ChargeLaserIcon;
     }
 }

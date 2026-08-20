@@ -17,8 +17,13 @@ public sealed unsafe class AudioEngine : IDisposable
     /// <summary>11025 * 4, the rate the game asks for.</summary>
     public const int OutputRate = 44100;
     private const int BufferFrames = 1024;               // ~23 ms, as the game asks for
-    private const int ChannelCount = 8;                  // loudness.c CHANNEL_COUNT
+    private const int ChannelCount = 9;                  // loudness.c CHANNEL_COUNT
     private const int ChannelVolumeLevels = 8;           // loudness.c CHANNEL_VOLUME_LEVELS
+
+    /// <summary>Channels 0-7 belong to the sim's <c>soundQueue</c> slots; this one is reserved
+    /// for presentation-side cues, so playing one can never cut a queued game sound
+    /// (loudness.h <c>SFX_CUE_CHANNEL</c>).</summary>
+    public const int SfxCueChannel = 8;
 
     private const uint SdlInitAudio = 0x00000010u;
     private const ushort AudioS16Sys = 0x8010;           // AUDIO_S16LSB

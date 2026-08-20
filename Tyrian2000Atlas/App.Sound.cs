@@ -24,7 +24,7 @@ public sealed unsafe partial class App
     private readonly byte[] _soundFilter = new byte[64];
     private bool _soundScrollToSelection;
     private int _soundKindTab;            // 0 all, 1 effects, 2 voices
-    private int _soundChannel = 7;        // which mixer channel the preview uses
+    private int _soundChannel = AudioEngine.SfxCueChannel;  // which mixer channel the preview uses
     private int _soundLevel = 4;          // ... at which of the eight volume steps
     private bool _soundAutoPlay = true;   // clicking a row plays it, like the game's jukebox
     private bool _xmasVoices;             // voicesc.snd instead of voices.snd
@@ -307,10 +307,12 @@ public sealed unsafe partial class App
         BandDivider();
         BandLabel("channel");
         ImGui.SetNextItemWidth(90);
-        ImGui.SliderInt("##sndchan", ref _soundChannel, 0, 7);
-        SliderReset(ref _soundChannel, 7,
-            "The game mixes eight channels and a new sound simply replaces\n" +
-            "whatever that channel was playing. Channel 3 is the announcer's.");
+        ImGui.SliderInt("##sndchan", ref _soundChannel, 0, AudioEngine.SfxCueChannel);
+        SliderReset(ref _soundChannel, AudioEngine.SfxCueChannel,
+            "The game queues eight channels and a new sound simply replaces\n" +
+            "whatever that channel was playing. Channel 3 is the announcer's.\n" +
+            "Channel 8 is the spare cue channel, so a preview fired there\n" +
+            "cannot cut a sound the level is queueing.");
 
         BandDivider();
         BandLabel("level");
