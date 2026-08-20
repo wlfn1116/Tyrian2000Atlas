@@ -51,7 +51,10 @@ public sealed class GameData
     private readonly Dictionary<int, ItemData> _itemCache = new();
     private readonly Dictionary<int, EpisodeGraph> _graphCache = new();
     private readonly Dictionary<int, List<DataCube>> _cubeCache = new();
+    private readonly Dictionary<int, Sprite?[]> _standaloneCache = new();
     private List<string>? _planetNames;
+    private string? _newshPresent;
+    private bool[]? _standalonePresent;
     private MainShapes? _main;
     private MainShapes? _xmas;
     private bool _xmasTried;
@@ -70,8 +73,61 @@ public sealed class GameData
     public static char ShapeBankChar(int bank)
         => bank >= 1 && bank <= ShapeFile.Length ? ShapeFile[bank - 1] : '?';
 
+    /// <summary>
+    /// The two shape banks that never reach a newsh file at all: JE_makeEnemy (tyrian2.c:6325)
+    /// answers 21 with tyrian.shp's coins/datacubes sheet and 26 with its powerups sheet before
+    /// it so much as looks at the four banks event 5 loaded. shapeFile[] still carries an entry
+    /// for each, and both are dead letters -- 21's names newshq.shp, which no release ships (so
+    /// a level that did load bank 21 would take the real game down in dir_fopen_die), and 26's
+    /// names newsh5.shp, which bank 33 is the real route to. No level loads either.
+    /// </summary>
+    public static bool IsHardCodedBank(int bank) => bank is 21 or 26;
+
+    /// <summary>The tyrian.shp sub-table a hard-coded bank draws from, or -1 for a normal bank.</summary>
+    public static int HardCodedBankSheet(int bank) => bank switch { 21 => 10, 26 => 9, _ => -1 };
+
+    /// <summary>
+    /// Every newsh%c.shp the game can hold, in the order its own sprite viewer walks them
+    /// (mainint.c JE_spriteViewer). Past the shape banks these are loaded by name, one job each:
+    /// '1' the shop, HUD and mouse pointer, '6' explosions, '~' the Destruct minigame, '$' the
+    /// ship editor's extra ships. '(' is a loose copy of tyrian.shp's player-shot sheet that
+    /// nothing loads.
+    /// </summary>
+    public const string NewshChars = "0123456789abcdefghijklmnopqrstuvwxyz#$%'(@^~";
+
+    /// <summary>
+    /// The 1-based shape banks whose shapeFile[] entry is this file, skipping the two the engine
+    /// hard-codes away. Empty for a sheet that is only ever loaded by name.
+    /// </summary>
+    public static List<int> ShapeBanksFor(char fileChar)
+    {
+        char c = char.ToLowerInvariant(fileChar);
+        var banks = new List<int>();
+        for (int b = 1; b <= ShapeFile.Length; b++)
+            if (!IsHardCodedBank(b) && char.ToLowerInvariant(ShapeFile[b - 1]) == c) banks.Add(b);
+        return banks;
+    }
+
     /// <summary>The terrain tile sets the levels draw from (shapes%c.dat).</summary>
     public static readonly char[] TileSetChars = { 'w', 'x', 'y', 'z', ')' };
+
+    /// <summary>
+    /// The shape files that live outside tyrian.shp, in the order the game's own viewer lists
+    /// them. estsc/estpa are plain Sprite_array files; the ship-editor pair needs
+    /// <see cref="ShipEditorCells"/> instead, which is why the format is carried here.
+    ///
+    /// estpa.shp is named from its contents, not from the sources: mainint.c calls it an unused
+    /// ending file and the data dump's index repeats that, but 151 of its 152 sprites are pixel
+    /// -identical to tyrian.shp's planets bank and the odd one out is an earlier, smaller "2000"
+    /// logo -- so it is that bank's older twin, not ending art.
+    /// </summary>
+    public static readonly (string File, string Name, string Role, bool Cells)[] StandaloneShapes =
+    {
+        ("estsc.shp", "Ending & credits", "JE_playCredits", false),
+        ("estpa.shp", "Planets & title logos", "older twin of tyrian.shp #3", false),
+        ("user1.shp", "DOS ship editor 1", "12x14 cells, not read at runtime", true),
+        ("user2.shp", "DOS ship editor 2", "12x14 cells, not read at runtime", true),
+    };
 
     public GameData(string dataDir)
     {
@@ -132,6 +188,61 @@ public sealed class GameData
 
     public MainShapes Main => _main ??= MainShapes.Load(Path.Combine(DataDir, "tyrian.shp"));
 
+    private PicFile? _pics;
+    private bool _picsTried;
+
+    /// <summary>tyrian.pic, the ]P/]U backdrops; null when the file is absent or unreadable.</summary>
+    public PicFile? Pics
+    {
+        get
+        {
+            if (_picsTried) return _pics;
+            _picsTried = true;
+            try { _pics = PicFile.Load(Path.Combine(DataDir, "tyrian.pic")); }
+            catch { _pics = null; }
+            return _pics;
+        }
+    }
+
+    private string[]? _pcxNames;
+    private readonly Dictionary<string, PcxImage?> _pcxCache = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Every loose .pcx beside the data, by file name. The engine only ever loads one of them
+    /// — tshp2.pcx, the "]P 0" backdrop (tyrian2.c:4483) — but the folder is listed rather than
+    /// that one name hard-coded, so shipedit.pcx and anything else shipped alongside shows up.
+    /// </summary>
+    public IReadOnlyList<string> PcxNames
+    {
+        get
+        {
+            if (_pcxNames != null) return _pcxNames;
+            try
+            {
+                _pcxNames = Directory.EnumerateFiles(DataDir, "*.pcx")
+                    .Select(Path.GetFileName)
+                    .Where(n => !string.IsNullOrEmpty(n))
+                    .Select(n => n!)
+                    .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+            }
+            catch { _pcxNames = Array.Empty<string>(); }
+            return _pcxNames;
+        }
+    }
+
+    /// <summary>One loose .pcx decoded, cached; null when it is missing or in a form
+    /// <see cref="PcxImage"/> will not read.</summary>
+    public PcxImage? GetPcx(string name)
+    {
+        if (_pcxCache.TryGetValue(name, out var hit)) return hit;
+        PcxImage? img;
+        try { img = PcxImage.Load(Path.Combine(DataDir, name)); }
+        catch { img = null; }
+        _pcxCache[name] = img;
+        return img;
+    }
+
     /// <summary>
     /// The Christmas shape file. Xmas mode is a wholesale swap of tyrian.shp for tyrianc.shp
     /// (opentyr.c:281) — same 13 sub-tables, different art — so it is the same structure read
@@ -174,6 +285,43 @@ public sealed class GameData
         cs = File.Exists(path) ? CompShapes.LoadFile(path) : null;
         _newshCache[c] = cs;
         return cs;
+    }
+
+    /// <summary>
+    /// Which of <see cref="NewshChars"/> this folder actually holds, in that order. Asked of the
+    /// folder rather than of shapeFile[], which names one file (newshq.shp) that no release has.
+    /// </summary>
+    public string NewshCharsPresent => _newshPresent ??= string.Concat(
+        NewshChars.Where(c => File.Exists(Path.Combine(DataDir, $"newsh{c}.shp"))));
+
+    /// <summary>Whether this folder holds one of <see cref="StandaloneShapes"/>.</summary>
+    public bool HasStandalone(int i)
+    {
+        _standalonePresent ??= Array.ConvertAll(StandaloneShapes,
+            s => File.Exists(Path.Combine(DataDir, s.File)));
+        return i >= 0 && i < _standalonePresent.Length && _standalonePresent[i];
+    }
+
+    /// <summary>One of <see cref="StandaloneShapes"/>, decoded and cached; empty when the file is
+    /// absent or will not parse.</summary>
+    public Sprite?[] GetStandalone(int i)
+    {
+        if (i < 0 || i >= StandaloneShapes.Length) return Array.Empty<Sprite?>();
+        if (_standaloneCache.TryGetValue(i, out var hit)) return hit;
+        var (file, _, _, cells) = StandaloneShapes[i];
+        Sprite?[] list = Array.Empty<Sprite?>();
+        try
+        {
+            string path = Path.Combine(DataDir, file);
+            if (File.Exists(path))
+            {
+                byte[] d = File.ReadAllBytes(path);
+                list = cells ? ShipEditorCells.Parse(d) : SpriteBank.Parse(d, 0).ToArray();
+            }
+        }
+        catch { list = Array.Empty<Sprite?>(); }
+        _standaloneCache[i] = list;
+        return list;
     }
 
     /// <summary>Galaxy-map planet names (1-based), shared by every episode.</summary>

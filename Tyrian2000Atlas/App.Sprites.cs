@@ -47,20 +47,29 @@ public sealed unsafe partial class App
     private static readonly (string Label, Func<SpriteSource, bool> Match)[] SpriteGroups =
     {
         ("Enemy banks", s => s.Store == SpriteStore.Newsh),
-        ("Shop sheet", s => s.Store == SpriteStore.NewshFile),
+        ("Sheets loaded by name", s => s.Store == SpriteStore.NewshFile),
         ("tyrian.shp sheets", s => s.Store == SpriteStore.MainSheet && !s.Xmas),
         ("tyrian.shp banks", s => s.Store == SpriteStore.MainBank && !s.Xmas),
         ("Christmas (tyrianc.shp)", s => s.Xmas),
+        ("Outside tyrian.shp", s => s.Store == SpriteStore.Standalone),
         ("Terrain tiles", s => s.Store == SpriteStore.Tiles),
     };
 
     /// <summary>Open the browser on a bank by its position in the list -- the "--showsprites N"
-    /// entry point, which is how one particular bank gets framed for a screenshot.</summary>
+    /// entry point, which is how one particular bank gets framed for a screenshot. Indices past
+    /// the last bank carry on into the picture list, which is where that list is drawn.</summary>
     public void ShowSpriteBank(int listIndex)
     {
         var all = AllSpriteSources();
-        if (listIndex < 0 || listIndex >= all.Count) return;
-        OpenSprite(all[listIndex], -1);
+        if (listIndex < 0) return;
+        if (listIndex < all.Count) { OpenSprite(all[listIndex], -1); return; }
+
+        int pic = listIndex - all.Count;
+        if (pic >= AllPictureSources().Count) return;
+        _showSprites = true;
+        _picSelected = pic;
+        _sprSelected = -1;
+        _sprScrollBankList = true;
     }
 
     /// <summary>Open the browser on a particular sprite (the enemy browser links through here).</summary>
@@ -69,6 +78,7 @@ public sealed unsafe partial class App
         _showSprites = true;
         _sprSource = src;
         _sprSelected = index;
+        _picSelected = -1;
         _sprScrollBankList = true;
         _sprScrollGrid = index >= 0;
     }
@@ -94,7 +104,8 @@ public sealed unsafe partial class App
         ImGui.SameLine(0, 3);
 
         ImGui.BeginChild("sprmain", new Vector2(0, 0));
-        DrawSpriteSheet();
+        if (_picSelected >= 0) DrawPicturePane();
+        else DrawSpriteSheet();
         ImGui.EndChild();
 
         RefEnd(AcSprite);
@@ -105,7 +116,7 @@ public sealed unsafe partial class App
     {
         BandBegin("sprband", AcSprite);
 
-        UiFilter("##sprfilter", "filter banks", _sprFilter, 210f, AcSprite);
+        UiFilter("##sprfilter", "filter banks & pictures", _sprFilter, 210f, AcSprite);
 
         BandDivider();
         BandLabel("palette");
@@ -122,20 +133,23 @@ public sealed unsafe partial class App
 
         BandDivider();
         int banks = AllSpriteSources().Count;
+        int pictures = AllPictureSources().Count;
         bool windows = OperatingSystem.IsWindows();
         // The row stride is the one the grid strip sets, so a file out of here is the same file
         // "export sheet PNG" would have written for that bank.
         int allCols = _sprCols > 0 ? _sprCols : SheetDefaultCols;
         if (UiButton("export all sprites", AcSprite,
-                $"Write all {banks} banks as PNG sheets at 1:1, {allCols} sprites to a row, into\n" +
-                "one folder -- each named for the bank it came out of, replacing a file\n" +
-                "already there by that name. Decoded through the palette selected here.\n" +
-                "Takes about a second; the status line counts them off.",
+                $"Write all {banks} banks as PNG sheets at 1:1, {allCols} sprites to a row, and\n" +
+                $"all {pictures} pictures whole, into one folder -- each named for where it\n" +
+                "came from, replacing a file already there by that name. Banks are\n" +
+                "decoded through the palette selected here; a picture is decoded the\n" +
+                "way its own pane is. Takes about a second; the status line counts\n" +
+                "them off.",
                 0f, SpriteExportBusy || !windows) && windows)
             StartSpriteExportAll(_sprPalette, allCols);
 
         BandDivider();
-        BandNote($"{banks} banks in this data folder", UiFaint);
+        BandNote($"{banks} banks, {pictures} pictures in this data folder", UiFaint);
 
         BandEnd();
     }
@@ -157,15 +171,18 @@ public sealed unsafe partial class App
 
             foreach (var src in items)
             {
-                bool sel = src == _sprSource;
+                bool sel = _picSelected < 0 && src == _sprSource;
                 var box = UiRow($"##b{(int)src.Store}_{src.Index}_{src.Xmas}", sel, AcSprite, 30f);
-                if (box.Clicked) { _sprSource = src; _sprSelected = -1; }
+                if (box.Clicked) { _sprSource = src; _sprSelected = -1; _picSelected = -1; }
                 if (box.Hovered) ImGui.SetTooltip(src.Title);
                 RowText(box, 11f, src.ListTitle, src.ListNote, AcSprite, sel);
                 if (sel && _sprScrollBankList) ImGui.SetScrollHereY(0.5f);
             }
         }
-        if (!any) ImGui.TextDisabled("No bank matches that filter.");
+        // Last, and after the banks rather than among them: these are not sprite banks at all
+        // but whole 320x200 paintings, and the pane they open is a different pane.
+        any |= DrawPictureList(filter);
+        if (!any) ImGui.TextDisabled("Nothing matches that filter.");
         _sprScrollBankList = false;
     }
 
@@ -175,7 +192,10 @@ public sealed unsafe partial class App
         if (atlas == null || atlas.Count == 0)
         {
             UiTitle(_sprSource.ListTitle.ToUpperInvariant(), AcSprite, _sprSource.Title);
-            UiEmpty("This bank could not be read", "Not present in the current data folder.", AcSprite);
+            // Name the file: the list is built from the folder, so a row that cannot be read now
+            // means the folder changed under it, not that the browser invented the bank.
+            UiEmpty("This bank could not be read",
+                $"{_sprSource.DiskFile} is missing from the data folder, or will not decode.", AcSprite);
             return;
         }
 
@@ -441,7 +461,7 @@ public sealed unsafe partial class App
         var users = SpriteUsers(_sprSource, _sprSelected);
         if (users.Count == 0)
         {
-            ImGui.TextColored(ColorOf(UiFaint), _sprSource.Store == SpriteStore.Newsh
+            ImGui.TextColored(ColorOf(UiFaint), EnemyBankOf(_sprSource) != 0
                 ? "No enemyDat entry in this episode names it."
                 : "Drawn by the menus rather than by an enemyDat entry.");
             ImGui.EndGroup();
@@ -487,19 +507,34 @@ public sealed unsafe partial class App
         ImGui.EndGroup();
     }
 
+    /// <summary>
+    /// The shape bank a browser row stands for, or 0 for a row no enemyDat entry can name. The
+    /// two tyrian.shp sheets JE_makeEnemy hard-codes are named by a bank just as much as a newsh
+    /// file is, so they answer for theirs -- without this, every coin, gem, datacube and powerup
+    /// claimed to be "drawn by the menus".
+    /// </summary>
+    private static int EnemyBankOf(SpriteSource src) => src.Store switch
+    {
+        SpriteStore.Newsh => src.Index,
+        SpriteStore.MainSheet when !src.Xmas && GameData.HardCodedBankSheet(21) == src.Index => 21,
+        SpriteStore.MainSheet when !src.Xmas && GameData.HardCodedBankSheet(26) == src.Index => 26,
+        _ => 0,
+    };
+
     /// <summary>enemyDat entries in the shown episode whose shape bank is this one and whose
     /// frame table names this sprite -- the reverse of the enemy browser's sprite link.</summary>
     private List<int> SpriteUsers(SpriteSource src, int sprite)
     {
         var users = new List<int>();
-        if (_gd == null || src.Store != SpriteStore.Newsh || CurEpisode == null) return users;
+        int bank = EnemyBankOf(src);
+        if (_gd == null || bank == 0 || CurEpisode == null) return users;
         EnemyData ed;
         try { ed = _gd.GetEnemyData(CurEpisode); } catch { return users; }
 
         for (int i = 0; i < ed.Enemies.Length; i++)
         {
             var e = ed.Enemies[i];
-            if (!e.Loaded || e.ShapeBank != src.Index || e.EGraphic == null) continue;
+            if (!e.Loaded || e.ShapeBank != bank || e.EGraphic == null) continue;
             bool uses = e.Dgr == sprite;
             for (int g = 0; !uses && g < e.EGraphic.Length; g++) uses = e.EGraphic[g] == sprite;
             if (uses) users.Add(i);

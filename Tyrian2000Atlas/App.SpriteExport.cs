@@ -33,6 +33,10 @@ public sealed unsafe partial class App
     private volatile string? _sprAllPicked;
     private volatile bool _sprAllPicking;
     private List<SpriteSource>? _sprAllQueue;      // non-null while a run is in flight
+    /// <summary>The pictures the same run writes, drained after the banks. Kept as its own
+    /// list rather than folded into the queue: a picture is written whole and opaque in its
+    /// own palette, which is not what a sprite sheet's layout does.</summary>
+    private List<PictureSource> _sprAllPics = new();
     private string _sprAllDir = "";
     private int _sprAllAt, _sprAllWritten, _sprAllFailed, _sprAllPalette, _sprAllCols;
 
@@ -209,9 +213,11 @@ public sealed unsafe partial class App
             _sprAllDir = picked;
             _exportDir = picked;                  // where the next save opens
             _sprAllQueue = AllSpriteSources();
+            _sprAllPics = AllPictureSources();
             _sprAllAt = _sprAllWritten = _sprAllFailed = 0;
         }
         if (_sprAllQueue is not { } queue) return;
+        int total = queue.Count + _sprAllPics.Count;
         // The data folder went away under the run (it can be changed while this is going).
         // Abandon it rather than leaving a queue that can never drain and a button that can
         // never be pressed again.
@@ -222,29 +228,43 @@ public sealed unsafe partial class App
             return;
         }
 
-        if (_sprAllAt >= queue.Count)
+        if (_sprAllAt >= total)
         {
             _sprAllQueue = null;
-            _status = $"Wrote {_sprAllWritten} sprite sheet{(_sprAllWritten == 1 ? "" : "s")} " +
+            _status = $"Wrote {_sprAllWritten} file{(_sprAllWritten == 1 ? "" : "s")} " +
                       $"to {FolderLabel(_sprAllDir)}" +
                       (_sprAllFailed > 0 ? $"; {_sprAllFailed} could not be read." : ".");
             return;
         }
 
-        var src = queue[_sprAllAt++];
+        int at = _sprAllAt++;
         try
         {
-            if (BuildSpriteSheet(src, _sprAllPalette, _sprAllCols, out int w, out int h,
-                    out var rgba, out _))
+            if (at < queue.Count)
             {
-                Util.Png.WriteRgba(Path.Combine(_sprAllDir,
-                    $"{SpriteFileStem(src)}_pal{_sprAllPalette}_sheet.png"), w, h, rgba);
-                _sprAllWritten++;
+                var src = queue[at];
+                if (BuildSpriteSheet(src, _sprAllPalette, _sprAllCols, out int w, out int h,
+                        out var rgba, out _))
+                {
+                    Util.Png.WriteRgba(Path.Combine(_sprAllDir,
+                        $"{SpriteFileStem(src)}_pal{_sprAllPalette}_sheet.png"), w, h, rgba);
+                    _sprAllWritten++;
+                }
+                else _sprAllFailed++;
             }
-            else _sprAllFailed++;
+            else
+            {
+                var pic = _sprAllPics[at - queue.Count];
+                if (BuildPictureRgba(pic, out int w, out int h, out var rgba, out _))
+                {
+                    Util.Png.WriteRgba(Path.Combine(_sprAllDir, PictureFileName(pic)), w, h, rgba);
+                    _sprAllWritten++;
+                }
+                else _sprAllFailed++;
+            }
         }
         catch { _sprAllFailed++; }
-        _status = $"Writing sprite sheets... {_sprAllAt}/{queue.Count}";
+        _status = $"Writing sprite sheets and pictures... {_sprAllAt}/{total}";
     }
 
     /// <summary>One sprite into a target buffer. Colour 0 is the formats' transparency, not
@@ -271,6 +291,8 @@ public sealed unsafe partial class App
         SpriteStore.NewshFile => $"newsh{char.ToLowerInvariant(src.FileChar)}",
         SpriteStore.MainSheet => $"{(src.Xmas ? "tyrianc" : "tyrian")}_sheet{src.Index:00}",
         SpriteStore.MainBank => $"{(src.Xmas ? "tyrianc" : "tyrian")}_bank{src.Index:00}",
+        SpriteStore.Standalone =>
+            Path.GetFileNameWithoutExtension(GameData.StandaloneShapes[src.Index].File),
         _ => $"shapes{char.ToLowerInvariant(src.FileChar)}",
     };
 }
